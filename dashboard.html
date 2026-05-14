@@ -2,326 +2,869 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8"/>
-<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-<title>Master Dashboard</title>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>TASKDDB — Distributed Control Center</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+<link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Syne:wght@400;600;800&display=swap" rel="stylesheet"/>
 <style>
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { font-family: 'Segoe UI', sans-serif; background: #0f172a; color: #e2e8f0; min-height: 100vh; }
-  header { background: #1e293b; padding: 18px 30px; border-bottom: 2px solid #3b82f6; display: flex; align-items: center; gap: 14px; }
-  header h1 { font-size: 1.4rem; color: #60a5fa; }
-  .dot { width: 10px; height: 10px; border-radius: 50%; background: #22c55e; animation: pulse 2s infinite; }
-  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+/* ── Reset & Variables ── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
-  .container { max-width: 1100px; margin: 30px auto; padding: 0 20px; display: grid; gap: 20px; }
+:root {
+  --bg:       #080c12;
+  --surface:  #0e1420;
+  --card:     #121926;
+  --border:   #1e2d42;
+  --accent:   #00d4ff;
+  --accent2:  #7c3aed;
+  --green:    #00ff9d;
+  --red:      #ff4d6d;
+  --amber:    #ffb700;
+  --text:     #e2e8f0;
+  --muted:    #64748b;
+  --font-mono:'Space Mono', monospace;
+  --font-sans:'Syne', sans-serif;
+  --radius:   10px;
+  --glow:     0 0 20px rgba(0,212,255,0.15);
+}
 
-  .card { background: #1e293b; border-radius: 12px; padding: 22px; border: 1px solid #334155; }
-  .card h2 { font-size: 1rem; color: #94a3b8; margin-bottom: 16px; text-transform: uppercase; letter-spacing: 1px; display: flex; align-items: center; gap: 8px; }
+html { scroll-behavior: smooth; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-sans);
+  min-height: 100vh;
+  overflow-x: hidden;
+}
 
-  /* Snaps list */
-  #snap-list { display: flex; flex-wrap: wrap; gap: 10px; }
-  .snap-tag { background: #0f172a; border: 1px solid #3b82f6; border-radius: 8px; padding: 8px 14px; font-size: .85rem; display: flex; align-items: center; gap: 8px; }
-  .snap-tag span { color: #60a5fa; font-weight: 600; }
-  .snap-ip { color: #64748b; font-size: .78rem; }
+/* ── Background grid ── */
+body::before {
+  content:'';
+  position:fixed; inset:0; z-index:0;
+  background-image:
+    linear-gradient(rgba(0,212,255,0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0,212,255,0.03) 1px, transparent 1px);
+  background-size: 40px 40px;
+  pointer-events:none;
+}
 
-  /* Form rows */
-  .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-top: 10px; }
-  select, input[type=text], input[type=file] {
-    background: #0f172a; border: 1px solid #334155; color: #e2e8f0;
-    border-radius: 8px; padding: 9px 13px; font-size: .9rem; flex: 1; min-width: 160px;
-  }
-  input[type=file] { padding: 7px 13px; }
-  button {
-    background: #3b82f6; color: #fff; border: none; border-radius: 8px;
-    padding: 9px 20px; cursor: pointer; font-size: .9rem; font-weight: 600; transition: background .2s;
-  }
-  button:hover { background: #2563eb; }
-  button.danger { background: #ef4444; }
-  button.danger:hover { background: #dc2626; }
-  button.success { background: #22c55e; }
-  button.success:hover { background: #16a34a; }
-  button.purple { background: #8b5cf6; }
-  button.purple:hover { background: #7c3aed; }
+/* ── Layout ── */
+.app { position:relative; z-index:1; display:flex; flex-direction:column; min-height:100vh; }
 
-  /* Results */
-  .result-box {
-    margin-top: 14px; background: #0f172a; border-radius: 8px; padding: 14px;
-    font-size: .85rem; max-height: 260px; overflow-y: auto; border: 1px solid #334155;
-    white-space: pre-wrap; font-family: monospace; color: #a3e635; display: none;
-  }
-  .result-box.show { display: block; }
+/* ── Header ── */
+header {
+  display:flex; align-items:center; justify-content:space-between;
+  padding: 18px 32px;
+  border-bottom: 1px solid var(--border);
+  background: rgba(8,12,18,0.9);
+  backdrop-filter: blur(12px);
+  position: sticky; top:0; z-index:100;
+}
+.logo { display:flex; align-items:center; gap:12px; }
+.logo-icon {
+  width:36px; height:36px;
+  background: linear-gradient(135deg, var(--accent), var(--accent2));
+  border-radius:8px;
+  display:flex; align-items:center; justify-content:center;
+  font-size:18px;
+}
+.logo-text { font-size:1.2rem; font-weight:800; letter-spacing:0.05em; }
+.logo-text span { color: var(--accent); }
 
-  /* MapReduce result table */
-  .mr-table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: .85rem; }
-  .mr-table th { background: #1e293b; color: #94a3b8; padding: 8px 12px; text-align: left; border-bottom: 1px solid #334155; }
-  .mr-table td { padding: 8px 12px; border-bottom: 1px solid #1e293b; }
-  .mr-table tr:hover td { background: #1e293b55; }
+.header-status {
+  display:flex; align-items:center; gap:8px;
+  font-family: var(--font-mono); font-size:0.75rem; color: var(--muted);
+}
+.status-dot {
+  width:8px; height:8px; border-radius:50%;
+  background: var(--green);
+  box-shadow: 0 0 8px var(--green);
+  animation: pulse 2s ease-in-out infinite;
+}
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
 
-  /* Hash result */
-  .hash-result { background: #0f172a; border-radius: 8px; padding: 14px; margin-top: 12px; display: none; border: 1px solid #334155; }
-  .hash-result.show { display: block; }
-  .hash-pill { display: inline-block; background: #7c3aed22; border: 1px solid #7c3aed; color: #a78bfa; border-radius: 20px; padding: 3px 12px; font-size: .8rem; margin: 3px; }
-  .assigned { background: #16a34a22; border-color: #22c55e; color: #86efac; }
+.online-count {
+  background: rgba(0,255,157,0.1);
+  border: 1px solid rgba(0,255,157,0.3);
+  color: var(--green);
+  padding: 4px 12px; border-radius:20px;
+  font-family: var(--font-mono); font-size:0.75rem;
+}
 
-  /* Toast */
-  #toast { position: fixed; bottom: 24px; right: 24px; background: #22c55e; color: #fff; padding: 12px 20px; border-radius: 10px; font-size: .9rem; display: none; z-index: 999; box-shadow: 0 4px 20px #0008; }
-  #toast.error { background: #ef4444; }
+/* ── Main layout ── */
+main { flex:1; display:grid; grid-template-columns:1fr; gap:0; }
+
+.sidebar-nav {
+  display:flex; gap:4px;
+  padding: 16px 32px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+.nav-btn {
+  padding: 8px 20px; border-radius:6px; border:none; cursor:pointer;
+  font-family: var(--font-mono); font-size:0.78rem; font-weight:700;
+  color: var(--muted); background: transparent;
+  transition: all 0.2s;
+  display:flex; align-items:center; gap:8px;
+}
+.nav-btn:hover { color:var(--text); background: var(--border); }
+.nav-btn.active {
+  color: var(--accent); background: rgba(0,212,255,0.1);
+  border: 1px solid rgba(0,212,255,0.3);
+}
+
+/* ── Content sections ── */
+.content { padding: 32px; max-width:1200px; width:100%; margin:0 auto; }
+.section { display:none; animation: fadeIn 0.3s ease; }
+.section.active { display:block; }
+@keyframes fadeIn { from{opacity:0;transform:translateY(8px)} to{opacity:1;transform:translateY(0)} }
+
+/* ── Section titles ── */
+.section-header { margin-bottom:24px; }
+.section-title {
+  font-size:1.6rem; font-weight:800;
+  background: linear-gradient(90deg, var(--text), var(--muted));
+  -webkit-background-clip:text; -webkit-text-fill-color:transparent;
+}
+.section-subtitle { color:var(--muted); font-size:0.85rem; margin-top:4px; font-family:var(--font-mono); }
+
+/* ── Cards ── */
+.card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 24px;
+  margin-bottom: 20px;
+  transition: border-color 0.2s;
+}
+.card:hover { border-color: rgba(0,212,255,0.2); }
+.card-title {
+  font-size:0.7rem; font-weight:700; letter-spacing:0.12em;
+  text-transform:uppercase; color:var(--muted);
+  margin-bottom:16px; display:flex; align-items:center; gap:8px;
+}
+.card-title::before {
+  content:''; width:16px; height:2px;
+  background: linear-gradient(90deg, var(--accent), transparent);
+}
+
+/* ── Table ── */
+.table-wrap { overflow-x:auto; }
+table { width:100%; border-collapse:collapse; font-family:var(--font-mono); font-size:0.82rem; }
+thead tr { border-bottom: 1px solid var(--border); }
+th {
+  text-align:left; padding:10px 14px;
+  font-size:0.65rem; letter-spacing:0.1em; text-transform:uppercase;
+  color:var(--muted); font-weight:700;
+}
+td { padding:12px 14px; border-bottom:1px solid rgba(30,45,66,0.5); vertical-align:middle; }
+tr:last-child td { border-bottom:none; }
+tr:hover td { background: rgba(0,212,255,0.03); }
+
+.status-badge {
+  display:inline-flex; align-items:center; gap:6px;
+  font-size:0.72rem; padding:3px 10px; border-radius:20px;
+  font-family:var(--font-mono);
+}
+.status-badge.online {
+  background: rgba(0,255,157,0.1); color:var(--green);
+  border: 1px solid rgba(0,255,157,0.25);
+}
+.status-badge.offline {
+  background: rgba(255,77,109,0.1); color:var(--red);
+  border: 1px solid rgba(255,77,109,0.25);
+}
+.status-badge .dot { width:6px; height:6px; border-radius:50%; background:currentColor; }
+
+/* ── Checkbox ── */
+input[type="checkbox"] {
+  width:16px; height:16px; accent-color:var(--accent); cursor:pointer;
+}
+
+/* ── Inputs ── */
+.form-group { margin-bottom:16px; }
+label { display:block; font-size:0.75rem; color:var(--muted); margin-bottom:6px; font-family:var(--font-mono); }
+input[type="text"], input[type="number"], select, textarea {
+  width:100%; padding:10px 14px;
+  background: var(--surface); border:1px solid var(--border);
+  border-radius:6px; color:var(--text);
+  font-family:var(--font-mono); font-size:0.85rem;
+  transition: border-color 0.2s, box-shadow 0.2s;
+  outline:none;
+}
+input[type="text"]:focus, input[type="number"]:focus, select:focus, textarea:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(0,212,255,0.08);
+}
+
+/* ── Buttons ── */
+.btn {
+  display:inline-flex; align-items:center; gap:8px;
+  padding:10px 22px; border-radius:6px; border:none; cursor:pointer;
+  font-family:var(--font-mono); font-size:0.82rem; font-weight:700;
+  transition: all 0.2s; letter-spacing:0.03em;
+}
+.btn-primary {
+  background: linear-gradient(135deg, var(--accent), #0090cc);
+  color: #000; box-shadow: 0 4px 15px rgba(0,212,255,0.25);
+}
+.btn-primary:hover { transform:translateY(-1px); box-shadow: 0 6px 20px rgba(0,212,255,0.4); }
+.btn-danger {
+  background: linear-gradient(135deg, var(--red), #c82348);
+  color:#fff; box-shadow: 0 4px 15px rgba(255,77,109,0.25);
+}
+.btn-danger:hover { transform:translateY(-1px); box-shadow: 0 6px 20px rgba(255,77,109,0.4); }
+.btn-purple {
+  background: linear-gradient(135deg, var(--accent2), #5b21b6);
+  color:#fff; box-shadow: 0 4px 15px rgba(124,58,237,0.25);
+}
+.btn-purple:hover { transform:translateY(-1px); box-shadow: 0 6px 20px rgba(124,58,237,0.4); }
+.btn-amber {
+  background: linear-gradient(135deg, var(--amber), #d97706);
+  color:#000; box-shadow: 0 4px 15px rgba(255,183,0,0.25);
+}
+.btn-amber:hover { transform:translateY(-1px); box-shadow: 0 6px 20px rgba(255,183,0,0.4); }
+.btn-ghost {
+  background: transparent; border:1px solid var(--border); color:var(--text);
+}
+.btn-ghost:hover { border-color:var(--accent); color:var(--accent); }
+.btn:disabled { opacity:0.5; cursor:not-allowed; transform:none; }
+
+.btn-row { display:flex; gap:12px; flex-wrap:wrap; align-items:center; }
+
+/* ── File input ── */
+.file-input-wrap { position:relative; }
+.file-input-wrap input[type="file"] {
+  position:absolute; inset:0; opacity:0; cursor:pointer; z-index:2;
+}
+.file-input-display {
+  padding:10px 14px; border:1px dashed var(--border); border-radius:6px;
+  color:var(--muted); font-family:var(--font-mono); font-size:0.82rem;
+  transition: border-color 0.2s; display:flex; align-items:center; gap:10px;
+}
+.file-input-wrap:hover .file-input-display { border-color:var(--accent); color:var(--accent); }
+
+/* ── Target select ── */
+.target-row { display:flex; gap:12px; align-items:flex-end; flex-wrap:wrap; }
+.target-row .form-group { flex:1; min-width:200px; margin-bottom:0; }
+
+/* ── Result boxes ── */
+.result-box {
+  background: var(--surface); border:1px solid var(--border);
+  border-radius:6px; padding:16px;
+  font-family:var(--font-mono); font-size:0.82rem;
+  min-height:60px; word-break:break-all;
+}
+.result-box .result-label { color:var(--muted); font-size:0.7rem; margin-bottom:6px; }
+.result-value { color:var(--accent); font-size:1.1rem; font-weight:700; }
+
+/* ── Hash result ── */
+.hash-display {
+  background: var(--surface); border:1px solid rgba(0,212,255,0.2);
+  border-radius:6px; padding:20px;
+  font-family:var(--font-mono); word-break:break-all;
+}
+.hash-value { color:var(--accent); font-size:0.9rem; line-height:1.6; }
+.hash-zeros { color:var(--green); }
+.hash-rest { color:var(--muted); }
+
+.stat-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px; margin-top:16px; }
+.stat-card {
+  background: var(--surface); border:1px solid var(--border);
+  border-radius:6px; padding:16px; text-align:center;
+}
+.stat-num { font-size:1.8rem; font-weight:800; color:var(--green); font-family:var(--font-mono); }
+.stat-label { font-size:0.7rem; color:var(--muted); margin-top:4px; text-transform:uppercase; letter-spacing:0.1em; }
+
+/* ── MapReduce results ── */
+.mr-results { margin-top:16px; }
+.mr-row {
+  display:flex; align-items:center; justify-content:space-between;
+  padding:10px 14px; border-bottom:1px solid var(--border);
+  font-family:var(--font-mono); font-size:0.82rem;
+}
+.mr-row:last-child { border-bottom:none; }
+.mr-ip { color:var(--accent); }
+.mr-val { color:var(--green); }
+.mr-total {
+  padding:12px 14px; background: rgba(0,212,255,0.05);
+  border:1px solid rgba(0,212,255,0.2); border-radius:6px;
+  display:flex; justify-content:space-between; align-items:center;
+  font-family:var(--font-mono); margin-top:8px;
+}
+.mr-total-label { color:var(--muted); font-size:0.78rem; }
+.mr-total-val { color:var(--accent); font-size:1.2rem; font-weight:700; }
+
+/* ── Spinner ── */
+.spinner {
+  width:16px; height:16px; border:2px solid rgba(0,0,0,0.3);
+  border-top-color:currentColor; border-radius:50%;
+  animation: spin 0.6s linear infinite; display:inline-block;
+}
+@keyframes spin { to{transform:rotate(360deg)} }
+
+/* ── Toast ── */
+#toast-container { position:fixed; bottom:24px; right:24px; z-index:9999; display:flex; flex-direction:column; gap:8px; }
+.toast {
+  padding:12px 20px; border-radius:8px; font-family:var(--font-mono); font-size:0.82rem;
+  animation: slideIn 0.3s ease, fadeOut 0.3s ease 2.7s forwards;
+  display:flex; align-items:center; gap:10px;
+  max-width:360px;
+}
+.toast.success { background:#0d2b1e; border:1px solid rgba(0,255,157,0.3); color:var(--green); }
+.toast.error   { background:#2b0d1a; border:1px solid rgba(255,77,109,0.3); color:var(--red); }
+.toast.info    { background:#0d1e2b; border:1px solid rgba(0,212,255,0.3); color:var(--accent); }
+@keyframes slideIn { from{transform:translateX(100%);opacity:0} to{transform:translateX(0);opacity:1} }
+@keyframes fadeOut { to{opacity:0;transform:translateX(100%)} }
+
+/* ── Empty state ── */
+.empty-state { text-align:center; padding:48px; color:var(--muted); }
+.empty-icon { font-size:3rem; margin-bottom:12px; opacity:0.4; }
+.empty-text { font-family:var(--font-mono); font-size:0.82rem; }
+
+/* ── Toolbar row ── */
+.toolbar { display:flex; align-items:center; justify-content:space-between; margin-bottom:16px; gap:12px; flex-wrap:wrap; }
+.toolbar-left { display:flex; align-items:center; gap:12px; }
+
+/* ── Scrollbar ── */
+::-webkit-scrollbar { width:6px; height:6px; }
+::-webkit-scrollbar-track { background:var(--surface); }
+::-webkit-scrollbar-thumb { background:var(--border); border-radius:3px; }
+::-webkit-scrollbar-thumb:hover { background:var(--accent); }
+
+/* ── Log section ── */
+.log-box {
+  background: #040608; border:1px solid var(--border); border-radius:6px;
+  padding:16px; height:280px; overflow-y:auto;
+  font-family:var(--font-mono); font-size:0.75rem; line-height:1.8;
+}
+.log-line { color:var(--muted); }
+.log-line .log-time { color:var(--accent2); margin-right:8px; }
+.log-line .log-msg { color:var(--text); }
+.log-line.event .log-msg { color:var(--green); }
+.log-line.error .log-msg { color:var(--red); }
+
+/* ── Responsive ── */
+@media(max-width:640px) {
+  header { padding:14px 16px; }
+  .content { padding:16px; }
+  .sidebar-nav { padding:10px 16px; overflow-x:auto; }
+  .nav-btn { white-space:nowrap; }
+}
 </style>
 </head>
 <body>
+<div class="app">
+
+<!-- ── Header ── -->
 <header>
-  <div class="dot"></div>
-  <h1>🖥 Master Dashboard</h1>
-  <span style="margin-left:auto;font-size:.85rem;color:#64748b" id="snap-count">Loading...</span>
+  <div class="logo">
+    <div class="logo-icon">⬡</div>
+    <div class="logo-text">TASK<span>DDB</span></div>
+  </div>
+  <div class="header-status">
+    <div class="status-dot"></div>
+    <span>MASTER ONLINE</span>
+    <div class="online-count" id="onlineCount">0 NODES</div>
+  </div>
 </header>
 
-<div class="container">
+<!-- ── Nav ── -->
+<nav class="sidebar-nav">
+  <button class="nav-btn active" onclick="showTab('devices',this)">⬡ DEVICES</button>
+  <button class="nav-btn" onclick="showTab('remote',this)">⚡ REMOTE</button>
+  <button class="nav-btn" onclick="showTab('mapreduce',this)">⊛ MAPREDUCE</button>
+  <button class="nav-btn" onclick="showTab('hashing',this)">⟳ HASHING</button>
+  <button class="nav-btn" onclick="showTab('logs',this)">▤ LOGS</button>
+</nav>
 
-  <!-- Connected Snaps -->
-  <div class="card">
-    <h2>🟢 Connected Snaps</h2>
-    <div id="snap-list"><em style="color:#64748b">No snaps connected yet…</em></div>
-  </div>
+<!-- ── Content ── -->
+<div class="content">
 
-  <!-- Task 1a: Shutdown -->
-  <div class="card">
-    <h2>🔴 Shutdown Device</h2>
-    <div class="row">
-      <select id="shutdown-snap"><option value="ALL">All Snaps</option></select>
-      <button class="danger" onclick="doShutdown()">⚡ Shutdown</button>
+  <!-- ════════ DEVICES ════════ -->
+  <section id="tab-devices" class="section active">
+    <div class="section-header">
+      <div class="section-title">Connected Nodes</div>
+      <div class="section-subtitle">// Real-time snap node registry</div>
     </div>
-    <div class="result-box" id="shutdown-result"></div>
-  </div>
-
-  <!-- Task 1b: Change Background -->
-  <div class="card">
-    <h2>🖼 Change Wallpaper</h2>
-    <div class="row">
-      <select id="bg-snap"><option value="ALL">All Snaps</option></select>
-      <input type="text" id="bg-path" placeholder="e.g. C:\wallpaper.jpg or /home/user/bg.png"/>
-      <button onclick="doBackground()">🎨 Change Background</button>
-    </div>
-    <div class="result-box" id="bg-result"></div>
-  </div>
-
-  <!-- Task 1c: Send File -->
-  <div class="card">
-    <h2>📁 Send File to Snap</h2>
-    <div class="row">
-      <select id="file-snap"><option value="">— Select Snap —</option></select>
-      <input type="file" id="file-input"/>
-      <button class="success" onclick="doSendFile()">📤 Send File</button>
-    </div>
-    <div class="result-box" id="file-result"></div>
-  </div>
-
-  <!-- Task 2: MapReduce -->
-  <div class="card">
-    <h2>🗺 MapReduce — Distributed Search</h2>
-    <p style="color:#64748b;font-size:.82rem;margin-bottom:12px">
-      Sends query to <b>all snaps</b>. Each snap searches its local <code>data.txt</code> file.
-      Master collects &amp; merges all results (Reduce step).
-    </p>
-    <div class="row">
-      <input type="text" id="mr-query" placeholder="Search query e.g. hello"/>
-      <button class="purple" onclick="doMapReduce()">🔍 Run MapReduce</button>
-    </div>
-    <div id="mr-result" style="display:none;margin-top:14px">
-      <div style="color:#86efac;font-size:.9rem;margin-bottom:8px">
-        Total matches: <b id="mr-total">0</b>
+    <div class="card">
+      <div class="toolbar">
+        <div class="toolbar-left">
+          <div class="card-title">NODE REGISTRY</div>
+        </div>
+        <button class="btn btn-ghost" onclick="refreshClients()" id="refreshBtn">
+          ↻ REFRESH
+        </button>
       </div>
-      <table class="mr-table">
-        <thead><tr><th>Snap</th><th>Matches</th><th>Lines Found</th></tr></thead>
-        <tbody id="mr-rows"></tbody>
-      </table>
-      <div style="margin-top:12px;color:#94a3b8;font-size:.82rem">All matching lines:</div>
-      <div class="result-box show" id="mr-lines" style="display:block"></div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th><input type="checkbox" id="selectAll" onchange="toggleSelectAll(this)"/></th>
+              <th>IP ADDRESS</th>
+              <th>STATUS</th>
+              <th>CONNECTED</th>
+            </tr>
+          </thead>
+          <tbody id="clientsTableBody">
+            <tr>
+              <td colspan="4">
+                <div class="empty-state">
+                  <div class="empty-icon">⬡</div>
+                  <div class="empty-text">No snap nodes connected. Start a snap node to begin.</div>
+                </div>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
     </div>
-  </div>
+  </section>
 
-  <!-- Task 3: Hashing -->
-  <div class="card">
-    <h2>🔑 Consistent Hashing</h2>
-    <p style="color:#64748b;font-size:.82rem;margin-bottom:12px">
-      Enter any key to see which snap it maps to using a consistent hash ring.
-      Virtual nodes (3 per snap) ensure even distribution.
-    </p>
-    <div class="row">
-      <input type="text" id="hash-key" placeholder="Enter key e.g. user:42 or file.txt"/>
-      <button onclick="doHash()">⚡ Lookup Hash</button>
+  <!-- ════════ REMOTE ════════ -->
+  <section id="tab-remote" class="section">
+    <div class="section-header">
+      <div class="section-title">Remote Commands</div>
+      <div class="section-subtitle">// Execute operations on connected nodes</div>
     </div>
-    <div class="hash-result" id="hash-result"></div>
-  </div>
 
-</div>
+    <!-- Target selector -->
+    <div class="card">
+      <div class="card-title">TARGET SELECTION</div>
+      <div class="form-group">
+        <label>TARGET NODE</label>
+        <select id="remoteTarget">
+          <option value="ALL">◈ ALL NODES</option>
+        </select>
+      </div>
+    </div>
 
-<div id="toast"></div>
+    <!-- Shutdown -->
+    <div class="card">
+      <div class="card-title">SHUTDOWN</div>
+      <p style="color:var(--muted);font-size:0.82rem;margin-bottom:16px;font-family:var(--font-mono);">
+        Send a shutdown command to selected node(s). The target device will power off immediately.
+      </p>
+      <button class="btn btn-danger" onclick="doShutdown()">
+        ⏻ SEND SHUTDOWN
+      </button>
+    </div>
+
+    <!-- Send File -->
+    <div class="card">
+      <div class="card-title">SEND FILE</div>
+      <div class="form-group">
+        <label>SELECT FILE</label>
+        <div class="file-input-wrap">
+          <input type="file" id="sendFileInput" onchange="updateFileLabel(this,'sendFileLabel')"/>
+          <div class="file-input-display" id="sendFileLabel">
+            <span>📂</span> <span>Click to choose a file...</span>
+          </div>
+        </div>
+      </div>
+      <button class="btn btn-primary" onclick="doSendFile()">
+        ↑ TRANSFER FILE
+      </button>
+    </div>
+
+    <!-- Wallpaper -->
+    <div class="card">
+      <div class="card-title">CHANGE WALLPAPER</div>
+      <div class="form-group">
+        <label>SELECT IMAGE</label>
+        <div class="file-input-wrap">
+          <input type="file" id="wallpaperInput" accept="image/*" onchange="updateFileLabel(this,'wallpaperLabel')"/>
+          <div class="file-input-display" id="wallpaperLabel">
+            <span>🖼</span> <span>Click to choose an image...</span>
+          </div>
+        </div>
+      </div>
+      <button class="btn btn-purple" onclick="doWallpaper()">
+        ✦ SET WALLPAPER
+      </button>
+    </div>
+  </section>
+
+  <!-- ════════ MAPREDUCE ════════ -->
+  <section id="tab-mapreduce" class="section">
+    <div class="section-header">
+      <div class="section-title">MapReduce</div>
+      <div class="section-subtitle">// Distributed query execution across all nodes</div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">QUERY INPUT</div>
+      <div class="form-group">
+        <label>QUERY COMMAND</label>
+        <select id="mrQuery" style="margin-bottom:10px">
+          <option value="COUNT">COUNT — Count local records</option>
+          <option value="SUM">SUM — Sum local values</option>
+          <option value="AVG">AVG — Average local values</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>CUSTOM QUERY (optional)</label>
+        <input type="text" id="mrCustomQuery" placeholder="Enter custom query string..."/>
+      </div>
+      <button class="btn btn-primary" onclick="doMapReduce()" id="mrBtn">
+        ⊛ EXECUTE QUERY
+      </button>
+    </div>
+
+    <div class="card" id="mrResultCard" style="display:none">
+      <div class="card-title">RESULTS</div>
+      <div id="mrResultBody"></div>
+    </div>
+  </section>
+
+  <!-- ════════ HASHING ════════ -->
+  <section id="tab-hashing" class="section">
+    <div class="section-header">
+      <div class="section-title">SHA-256 Mining</div>
+      <div class="section-subtitle">// Proof-of-work hash difficulty simulation</div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">HASH PARAMETERS</div>
+      <div class="form-group">
+        <label>INPUT TEXT</label>
+        <input type="text" id="hashText" placeholder="Enter text to hash..." value="hello world"/>
+      </div>
+      <div class="form-group">
+        <label>DIFFICULTY (leading zeros required)</label>
+        <input type="number" id="hashDifficulty" min="1" max="7" value="3"/>
+      </div>
+      <button class="btn btn-amber" onclick="doHash()" id="hashBtn">
+        ⟳ START HASHING
+      </button>
+    </div>
+
+    <div class="card" id="hashResultCard" style="display:none">
+      <div class="card-title">RESULT</div>
+      <div class="stat-grid">
+        <div class="stat-card">
+          <div class="stat-num" id="hashAttempts">—</div>
+          <div class="stat-label">Attempts</div>
+        </div>
+      </div>
+      <div style="margin-top:16px">
+        <label style="font-size:0.7rem;color:var(--muted);font-family:var(--font-mono);display:block;margin-bottom:8px">FINAL HASH</label>
+        <div class="hash-display">
+          <div class="hash-value" id="hashValue">—</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ════════ LOGS ════════ -->
+  <section id="tab-logs" class="section">
+    <div class="section-header">
+      <div class="section-title">Activity Log</div>
+      <div class="section-subtitle">// Master node event stream</div>
+    </div>
+    <div class="card">
+      <div class="toolbar">
+        <div class="card-title">EVENT LOG</div>
+        <button class="btn btn-ghost" onclick="clearLog()">✕ CLEAR</button>
+      </div>
+      <div class="log-box" id="logBox"></div>
+    </div>
+  </section>
+
+</div><!-- /content -->
+</div><!-- /app -->
+
+<!-- Toast container -->
+<div id="toast-container"></div>
 
 <script>
-const API = '';
+// ─────────────────────────────────────────────
+//  Utilities
+// ─────────────────────────────────────────────
 
-function toast(msg, isErr=false) {
-  const t = document.getElementById('toast');
-  t.textContent = msg;
-  t.className = isErr ? 'error' : '';
-  t.style.display = 'block';
-  setTimeout(() => t.style.display='none', 3000);
+function toast(msg, type='info') {
+  const el = document.createElement('div');
+  el.className = `toast ${type}`;
+  el.innerHTML = `<span>${type==='success'?'✓':type==='error'?'✕':'ℹ'}</span><span>${msg}</span>`;
+  document.getElementById('toast-container').appendChild(el);
+  setTimeout(()=>el.remove(), 3100);
 }
 
-function showResult(id, text, isErr=false) {
-  const el = document.getElementById(id);
-  el.textContent = text;
-  el.className = 'result-box show';
-  el.style.color = isErr ? '#f87171' : '#a3e635';
+function log(msg, type='') {
+  const box = document.getElementById('logBox');
+  const now = new Date().toLocaleTimeString('en',{hour12:false});
+  const line = document.createElement('div');
+  line.className = `log-line ${type}`;
+  line.innerHTML = `<span class="log-time">[${now}]</span><span class="log-msg">${msg}</span>`;
+  box.appendChild(line);
+  box.scrollTop = box.scrollHeight;
 }
 
-async function loadSnaps() {
-  try {
-    const res = await fetch('/api/snaps');
-    const snaps = await res.json();
-    
-    document.getElementById('snap-count').textContent = snaps.length + ' snap(s) online';
-    
-    const list = document.getElementById('snap-list');
-    if (snaps.length === 0) {
-      list.innerHTML = '<em style="color:#64748b">No snaps connected yet…</em>';
-    } else {
-      list.innerHTML = snaps.map(s => `
-        <div class="snap-tag">
-          <span>${s.name}</span>
-          <span class="snap-ip">${s.ip}</span>
-        </div>
-      `).join('');
-    }
+function clearLog() {
+  document.getElementById('logBox').innerHTML='';
+}
 
-    // Update all snap selects
-    const opts = '<option value="ALL">All Snaps</option>' + snaps.map(s => `<option value="${s.name}">${s.name} (${s.ip})</option>`).join('');
-    document.getElementById('shutdown-snap').innerHTML = opts;
-    document.getElementById('bg-snap').innerHTML = opts;
-
-    const fileOpts = '<option value="">— Select Snap —</option>' + snaps.map(s => `<option value="${s.name}">${s.name} (${s.ip})</option>`).join('');
-    document.getElementById('file-snap').innerHTML = fileOpts;
-
-  } catch(e) {
-    console.error(e);
+function setLoading(btnId, loading, label='') {
+  const btn = document.getElementById(btnId);
+  if(!btn) return;
+  if(loading) {
+    btn._orig = btn.innerHTML;
+    btn.innerHTML = `<span class="spinner"></span> ${label||'WORKING...'}`;
+    btn.disabled = true;
+  } else {
+    btn.innerHTML = btn._orig || label;
+    btn.disabled = false;
   }
 }
+
+// ─────────────────────────────────────────────
+//  Tab navigation
+// ─────────────────────────────────────────────
+
+function showTab(name, el) {
+  document.querySelectorAll('.section').forEach(s=>s.classList.remove('active'));
+  document.querySelectorAll('.nav-btn').forEach(b=>b.classList.remove('active'));
+  document.getElementById('tab-'+name).classList.add('active');
+  el.classList.add('active');
+}
+
+// ─────────────────────────────────────────────
+//  Client list
+// ─────────────────────────────────────────────
+
+let clients = [];
+
+async function refreshClients() {
+  setLoading('refreshBtn', true, '↻ REFRESH');
+  try {
+    const res = await fetch('/api/clients');
+    const data = await res.json();
+    clients = data.clients || [];
+    renderClients();
+    updateTargetSelect();
+    document.getElementById('onlineCount').textContent = clients.length + ' NODE' + (clients.length!==1?'S':'');
+  } catch(e) {
+    toast('Cannot reach master API', 'error');
+  } finally {
+    setLoading('refreshBtn', false, '↻ REFRESH');
+  }
+}
+
+function renderClients() {
+  const tbody = document.getElementById('clientsTableBody');
+  if(clients.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="4">
+      <div class="empty-state">
+        <div class="empty-icon">⬡</div>
+        <div class="empty-text">No snap nodes connected. Start a snap node to begin.</div>
+      </div></td></tr>`;
+    return;
+  }
+  const connectedAt = new Date().toLocaleTimeString('en',{hour12:false});
+  tbody.innerHTML = clients.map(ip => `
+    <tr>
+      <td><input type="checkbox" class="node-cb" value="${ip}"/></td>
+      <td style="font-family:var(--font-mono);color:var(--accent)">${ip}</td>
+      <td><span class="status-badge online"><span class="dot"></span>ONLINE</span></td>
+      <td style="font-family:var(--font-mono);color:var(--muted)">${connectedAt}</td>
+    </tr>
+  `).join('');
+}
+
+function updateTargetSelect() {
+  const sel = document.getElementById('remoteTarget');
+  sel.innerHTML = '<option value="ALL">◈ ALL NODES</option>';
+  clients.forEach(ip => {
+    const opt = document.createElement('option');
+    opt.value = ip; opt.textContent = ip;
+    sel.appendChild(opt);
+  });
+}
+
+function toggleSelectAll(cb) {
+  document.querySelectorAll('.node-cb').forEach(c=>c.checked=cb.checked);
+}
+
+// ─────────────────────────────────────────────
+//  File label update
+// ─────────────────────────────────────────────
+
+function updateFileLabel(input, labelId) {
+  const el = document.getElementById(labelId);
+  if(input.files && input.files[0]) {
+    const f = input.files[0];
+    const size = f.size > 1024*1024 ? (f.size/1024/1024).toFixed(1)+'MB' : (f.size/1024).toFixed(0)+'KB';
+    el.innerHTML = `<span>📄</span> <span>${f.name}</span> <span style="color:var(--muted);margin-left:auto">${size}</span>`;
+  }
+}
+
+// ─────────────────────────────────────────────
+//  Remote – Shutdown
+// ─────────────────────────────────────────────
 
 async function doShutdown() {
-  const snap = document.getElementById('shutdown-snap').value;
+  const target = document.getElementById('remoteTarget').value;
+  if(!confirm(`Send SHUTDOWN to: ${target}?\n\nThis will power off the target device!`)) return;
   try {
-    const res = await fetch(`/api/shutdown?snap=${snap}`, {method:'POST'});
+    const res = await fetch('/api/shutdown', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({target})
+    });
     const data = await res.json();
-    showResult('shutdown-result', JSON.stringify(data, null, 2));
-    toast('Shutdown command sent!');
-  } catch(e) {
-    showResult('shutdown-result', 'Error: ' + e.message, true);
-    toast('Error: ' + e.message, true);
-  }
+    if(res.ok) {
+      toast(`Shutdown sent to ${data.targets} node(s)`, 'success');
+      log(`SHUTDOWN → ${target}`, 'event');
+    } else {
+      toast(data.error, 'error');
+    }
+  } catch(e) { toast('Request failed', 'error'); }
 }
 
-async function doBackground() {
-  const snap = document.getElementById('bg-snap').value;
-  const path = document.getElementById('bg-path').value.trim();
-  if (!path) { toast('Enter image path first!', true); return; }
-  try {
-    const res = await fetch(`/api/background?snap=${snap}&path=${encodeURIComponent(path)}`, {method:'POST'});
-    const data = await res.json();
-    showResult('bg-result', JSON.stringify(data, null, 2));
-    toast('Background command sent!');
-  } catch(e) {
-    showResult('bg-result', 'Error: ' + e.message, true);
-    toast('Error: ' + e.message, true);
-  }
-}
+// ─────────────────────────────────────────────
+//  Remote – Send File
+// ─────────────────────────────────────────────
 
 async function doSendFile() {
-  const snap = document.getElementById('file-snap').value;
-  const fileInput = document.getElementById('file-input');
-  if (!snap) { toast('Select a snap first!', true); return; }
-  if (!fileInput.files.length) { toast('Select a file first!', true); return; }
-
-  const formData = new FormData();
-  formData.append('snap', snap);
-  formData.append('file', fileInput.files[0]);
-
-  showResult('file-result', '⏳ Uploading...');
+  const file = document.getElementById('sendFileInput').files[0];
+  if(!file) { toast('Please select a file first', 'error'); return; }
+  const target = document.getElementById('remoteTarget').value;
+  const fd = new FormData();
+  fd.append('target', target);
+  fd.append('file', file);
   try {
-    const res = await fetch('/api/sendfile', {method:'POST', body: formData});
+    const res = await fetch('/api/sendfile', {method:'POST', body:fd});
     const data = await res.json();
-    showResult('file-result', `✅ File sent!\nFilename: ${data.filename}\nSize: ${data.size} bytes\nTo: ${data.snap}`);
-    toast('File sent to ' + snap);
-  } catch(e) {
-    showResult('file-result', 'Error: ' + e.message, true);
-    toast('Error: ' + e.message, true);
-  }
+    if(res.ok) {
+      toast(`File "${file.name}" sent successfully`, 'success');
+      log(`FILE "${file.name}" → ${target}`, 'event');
+    } else { toast(data.error, 'error'); }
+  } catch(e) { toast('Transfer failed', 'error'); }
 }
+
+// ─────────────────────────────────────────────
+//  Remote – Wallpaper
+// ─────────────────────────────────────────────
+
+async function doWallpaper() {
+  const file = document.getElementById('wallpaperInput').files[0];
+  if(!file) { toast('Please select an image first', 'error'); return; }
+  const target = document.getElementById('remoteTarget').value;
+  const fd = new FormData();
+  fd.append('target', target);
+  fd.append('file', file);
+  try {
+    const res = await fetch('/api/wallpaper', {method:'POST', body:fd});
+    const data = await res.json();
+    if(res.ok) {
+      toast(`Wallpaper sent to ${target}`, 'success');
+      log(`WALLPAPER "${file.name}" → ${target}`, 'event');
+    } else { toast(data.error, 'error'); }
+  } catch(e) { toast('Transfer failed', 'error'); }
+}
+
+// ─────────────────────────────────────────────
+//  MapReduce
+// ─────────────────────────────────────────────
 
 async function doMapReduce() {
-  const query = document.getElementById('mr-query').value.trim();
-  if (!query) { toast('Enter a query first!', true); return; }
+  const custom = document.getElementById('mrCustomQuery').value.trim();
+  const query = custom || document.getElementById('mrQuery').value;
 
-  document.getElementById('mr-result').style.display = 'none';
+  setLoading('mrBtn', true, '⊛ EXECUTE QUERY');
+  log(`MapReduce query: ${query}`, 'event');
+
   try {
-    const res = await fetch(`/api/mapreduce?query=${encodeURIComponent(query)}`, {method:'POST'});
-    if (!res.ok) { toast(await res.text(), true); return; }
+    const res = await fetch('/api/query', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({query})
+    });
     const data = await res.json();
-
-    document.getElementById('mr-total').textContent = data.totalCount;
-    const tbody = document.getElementById('mr-rows');
-    tbody.innerHTML = data.results.map(r => `
-      <tr>
-        <td>${r.snap}</td>
-        <td><b style="color:#86efac">${r.count}</b></td>
-        <td style="color:#94a3b8">${(r.lines||[]).join(' | ') || '—'}</td>
-      </tr>
-    `).join('');
-
-    document.getElementById('mr-lines').textContent = (data.allLines||[]).join('\n') || '(no matches)';
-    document.getElementById('mr-result').style.display = 'block';
-    toast(`MapReduce done — ${data.totalCount} total matches`);
-  } catch(e) {
-    toast('Error: ' + e.message, true);
-  }
+    if(res.ok) {
+      renderMRResult(data, query);
+      toast(`Query "${query}" complete — total: ${data.total}`, 'success');
+      log(`MapReduce "${query}" → total=${data.total}`, 'event');
+    } else { toast(data.error||'Query failed', 'error'); }
+  } catch(e) { toast('Request failed', 'error'); }
+  finally { setLoading('mrBtn', false); }
 }
+
+function renderMRResult(data, query) {
+  const card = document.getElementById('mrResultCard');
+  const body = document.getElementById('mrResultBody');
+  card.style.display='block';
+
+  const rows = (data.results||[]).map(r=>`
+    <div class="mr-row">
+      <span class="mr-ip">⬡ ${r.ip}</span>
+      <span class="mr-val">${r.value}</span>
+    </div>
+  `).join('');
+
+  body.innerHTML = `
+    <div style="margin-bottom:8px">
+      ${rows || '<div class="mr-row"><span style="color:var(--muted)">No node results returned</span></div>'}
+    </div>
+    <div class="mr-total">
+      <span class="mr-total-label">AGGREGATE TOTAL [ ${query} ]</span>
+      <span class="mr-total-val">${data.total}</span>
+    </div>
+  `;
+}
+
+// ─────────────────────────────────────────────
+//  Hashing
+// ─────────────────────────────────────────────
 
 async function doHash() {
-  const key = document.getElementById('hash-key').value.trim();
-  if (!key) { toast('Enter a key first!', true); return; }
+  const text = document.getElementById('hashText').value.trim();
+  const diff = parseInt(document.getElementById('hashDifficulty').value);
+  if(!text) { toast('Enter input text', 'error'); return; }
+  if(diff < 1 || diff > 7) { toast('Difficulty must be 1–7', 'error'); return; }
+
+  setLoading('hashBtn', true, '⟳ MINING...');
+  document.getElementById('hashResultCard').style.display='none';
+  log(`HASH start: text="${text}" difficulty=${diff}`, 'event');
 
   try {
-    const res = await fetch(`/api/hash?key=${encodeURIComponent(key)}`);
+    const res = await fetch('/api/hash', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({text, difficulty:diff})
+    });
     const data = await res.json();
-
-    const el = document.getElementById('hash-result');
-    const snapPills = (data.snapHashes||[]).map(sh => `
-      <span class="hash-pill ${sh.name===data.assignedTo?'assigned':''}">
-        ${sh.name}: 0x${sh.hash}
-      </span>
-    `).join('');
-
-    el.innerHTML = `
-      <div style="margin-bottom:10px">
-        <span style="color:#94a3b8">Key:</span> <b style="color:#e2e8f0">${data.key}</b>
-        &nbsp;&nbsp;
-        <span style="color:#94a3b8">Hash:</span> <b style="color:#a78bfa">0x${data.hash}</b>
-      </div>
-      <div style="margin-bottom:10px">
-        <span style="color:#94a3b8">Assigned to:</span>
-        <b style="color:#86efac">${data.assignedTo || 'No snaps connected'}</b>
-      </div>
-      <div style="font-size:.82rem;color:#64748b;margin-bottom:8px">All snap positions on ring:</div>
-      <div>${snapPills || '<span style="color:#64748b">No snaps</span>'}</div>
-    `;
-    el.className = 'hash-result show';
-    toast('Hash lookup done!');
-  } catch(e) {
-    toast('Error: ' + e.message, true);
-  }
+    if(res.ok) {
+      renderHashResult(data, diff);
+      toast(`Hash found in ${data.attempts} attempts`, 'success');
+      log(`HASH found: ${data.hash} (${data.attempts} attempts)`, 'event');
+    } else { toast(data.error||'Hash failed', 'error'); }
+  } catch(e) { toast('Request failed', 'error'); }
+  finally { setLoading('hashBtn', false); }
 }
 
-// Auto-refresh snaps every 3 seconds
-loadSnaps();
-setInterval(loadSnaps, 3000);
+function renderHashResult(data, diff) {
+  const card = document.getElementById('hashResultCard');
+  card.style.display='block';
+
+  document.getElementById('hashAttempts').textContent = data.attempts.toLocaleString();
+
+  // Color leading zeros differently
+  const hash = data.hash || '';
+  const zeros = hash.slice(0, diff);
+  const rest  = hash.slice(diff);
+  document.getElementById('hashValue').innerHTML =
+    `<span class="hash-zeros">${zeros}</span><span class="hash-rest">${rest}</span>`;
+}
+
+// ─────────────────────────────────────────────
+//  Auto-refresh clients every 5s
+// ─────────────────────────────────────────────
+
+refreshClients();
+setInterval(refreshClients, 5000);
+log('Master dashboard initialized', 'event');
 </script>
 </body>
 </html>
