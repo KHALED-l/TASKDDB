@@ -2,286 +2,272 @@ package main
 
 import (
 	"bufio"
-	"encoding/json"
+	"crypto/sha256"
 	"fmt"
+	"io"
+	"log"
+	"math/rand"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 )
 
 // ─────────────────────────────────────────────
-//  MapReduce Result
+//  Globals
 // ─────────────────────────────────────────────
 
-type MapResult struct {
-	SnapName string   `json:"snap"`
-	Query    string   `json:"query"`
-	Count    int      `json:"count"`
-	Lines    []string `json:"lines"`
-	Error    string   `json:"error,omitempty"`
+var (
+	masterAddr = "127.0.0.1:9000" // override via CLI arg
+	logger     *log.Logger
+)
+
+func init() {
+	logger = log.New(os.Stdout, "[SNAP] ", log.LstdFlags)
 }
 
 // ─────────────────────────────────────────────
-//  Data stored locally on this snap (for MapReduce)
+//  Main – connect and loop
 // ─────────────────────────────────────────────
-
-// Each snap has a local data file: data.txt
-// MapReduce will search this file for the query string.
-
-var localDataFile = "data.txt"
-
-func searchLocalData(query string) MapResult {
-	result := MapResult{Query: query, Lines: []string{}}
-
-	file, err := os.Open(localDataFile)
-	if err != nil {
-		// Create sample data if not exists
-		sampleData := []string{
-			"hello world from snap",
-			"distributed systems are fun",
-			"mapreduce is powerful",
-			"hello distributed database",
-			"snap node is running",
-			"data stored locally here",
-		}
-		os.WriteFile(localDataFile, []byte(strings.Join(sampleData, "\n")), 0644)
-		file, err = os.Open(localDataFile)
-		if err != nil {
-			result.Error = err.Error()
-			return result
-		}
-	}
-	defer file.Close()
-
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		line := scanner.Text()
-		if strings.Contains(strings.ToLower(line), strings.ToLower(query)) {
-			result.Lines = append(result.Lines, line)
-			result.Count++
-		}
-	}
-	return result
-}
-
-// ─────────────────────────────────────────────
-//  Connection
-// ─────────────────────────────────────────────
-
-var masterConn net.Conn
 
 func main() {
-	masterIP := "192.168.251.22" // ← غيّر الـ IP حسب جهازك
-	port := 8082
-
-	var conn net.Conn
-	var err error
-
-	for retries := 0; retries < 5; retries++ {
-		conn, err = net.Dial("tcp", fmt.Sprintf("%s:%d", masterIP, port))
-		if err == nil {
-			break
-		}
-		fmt.Println("🔄 Retrying connection...")
-		time.Sleep(3 * time.Second)
+	if len(os.Args) > 1 {
+		masterAddr = os.Args[1]
 	}
 
+	logger.Printf("Snap node starting. Connecting to master at %s", masterAddr)
+
+	for {
+		if err := connectAndRun(); err != nil {
+			logger.Printf("Disconnected: %v. Retrying in 5s...", err)
+			time.Sleep(5 * time.Second)
+		}
+	}
+}
+
+// connectAndRun establishes a TCP connection and processes commands
+func connectAndRun() error {
+	conn, err := net.Dial("tcp", masterAddr)
 	if err != nil {
-		fmt.Println("❌ Failed to connect.")
-		return
+		return fmt.Errorf("dial: %w", err)
 	}
 	defer conn.Close()
-	masterConn = conn
 
-	fmt.Println("✅ Connected to master.")
-	conn.Write([]byte("online|snap-01\n"))
-
-	go listenForCommands(conn)
-
-	showMenu(conn)
-}
-
-// ─────────────────────────────────────────────
-//  Menu
-// ─────────────────────────────────────────────
-
-func showMenu(conn net.Conn) {
-	for {
-		fmt.Println("\n━━━━━━━━━━━━━━━━━━━━━━━━━")
-		fmt.Println("🖼  1. Send image path to master")
-		fmt.Println("📋 2. Show local data (MapReduce data)")
-		fmt.Println("➕ 3. Add line to local data")
-		fmt.Println("❌ 4. Exit")
-		fmt.Print("Select: ")
-		var choice int
-		fmt.Scanln(&choice)
-
-		switch choice {
-		case 1:
-			fmt.Print("Enter image path: ")
-			var path string
-			fmt.Scanln(&path)
-			conn.Write([]byte("imgpath|" + path + "\n"))
-		case 2:
-			data, err := os.ReadFile(localDataFile)
-			if err != nil {
-				fmt.Println("No local data file yet.")
-			} else {
-				fmt.Println("\n📄 Local data:\n" + string(data))
-			}
-		case 3:
-			fmt.Print("Enter line to add: ")
-			reader := bufio.NewReader(os.Stdin)
-			line, _ := reader.ReadString('\n')
-			line = strings.TrimSpace(line)
-			f, err := os.OpenFile(localDataFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-			if err == nil {
-				f.WriteString(line + "\n")
-				f.Close()
-				fmt.Println("✅ Line added to local data.")
-			}
-		case 4:
-			fmt.Println("Exiting...")
-			return
-		default:
-			fmt.Println("Invalid option.")
-		}
-	}
-}
-
-// ─────────────────────────────────────────────
-//  Command Listener
-// ─────────────────────────────────────────────
-
-func listenForCommands(conn net.Conn) {
+	logger.Printf("Connected to master at %s", masterAddr)
 	reader := bufio.NewReader(conn)
+
 	for {
-		cmd, err := reader.ReadString('\n')
+		line, err := reader.ReadString('\n')
 		if err != nil {
-			fmt.Println("🔌 Connection lost.")
-			return
+			return fmt.Errorf("read: %w", err)
 		}
-		cmd = strings.TrimSpace(cmd)
-		handleCommand(conn, reader, cmd)
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		logger.Printf("Command received: %s", line)
+		handleCommand(line, reader, conn)
 	}
 }
 
-func handleCommand(conn net.Conn, reader *bufio.Reader, cmd string) {
-	switch {
-	case cmd == "shutdown":
-		executeShutdown()
+// ─────────────────────────────────────────────
+//  Command dispatcher
+// ─────────────────────────────────────────────
 
-	case strings.HasPrefix(cmd, "background|"):
-		path := strings.TrimPrefix(cmd, "background|")
-		changeBackground(path)
+func handleCommand(line string, reader *bufio.Reader, conn net.Conn) {
+	parts := strings.SplitN(line, "|", -1)
+	cmd := strings.ToUpper(parts[0])
 
-	case strings.HasPrefix(cmd, "sendfile|"):
-		// Format: sendfile|<filename>|<size>
-		receiveFile(conn, reader, cmd)
+	switch cmd {
+	case "SHUTDOWN":
+		handleShutdown()
 
-	case strings.HasPrefix(cmd, "mapreduce|"):
-		query := strings.TrimPrefix(cmd, "mapreduce|")
-		fmt.Printf("📊 Running MapReduce for query: '%s'\n", query)
-		result := searchLocalData(query)
-		result.SnapName = "snap-01"
-
-		jsonBytes, err := json.Marshal(result)
-		if err != nil {
-			fmt.Println("❌ JSON marshal error:", err)
+	case "FILE":
+		if len(parts) < 3 {
+			logger.Println("Invalid FILE command")
 			return
 		}
-		conn.Write([]byte("mapresult|" + string(jsonBytes) + "\n"))
-		fmt.Printf("✅ Sent MapReduce result: %d matches found\n", result.Count)
+		filename := parts[1]
+		size, _ := strconv.Atoi(parts[2])
+		handleReceiveFile(filename, size, reader)
+
+	case "WALLPAPER":
+		if len(parts) < 3 {
+			logger.Println("Invalid WALLPAPER command")
+			return
+		}
+		filename := parts[1]
+		size, _ := strconv.Atoi(parts[2])
+		handleWallpaper(filename, size, reader, conn)
+
+	case "QUERY":
+		query := ""
+		if len(parts) > 1 {
+			query = parts[1]
+		}
+		handleQuery(query, conn)
+
+	case "HASH":
+		if len(parts) < 3 {
+			logger.Println("Invalid HASH command")
+			return
+		}
+		text := parts[1]
+		difficulty, _ := strconv.Atoi(parts[2])
+		handleHash(text, difficulty, conn)
 
 	default:
-		fmt.Println("❓ Unknown command:", cmd)
+		logger.Printf("Unknown command: %s", cmd)
 	}
 }
 
 // ─────────────────────────────────────────────
-//  Receive File from Master
+//  SHUTDOWN
 // ─────────────────────────────────────────────
 
-func receiveFile(conn net.Conn, reader *bufio.Reader, header string) {
-	// header: sendfile|<filename>|<size>
-	parts := strings.SplitN(header, "|", 3)
-	if len(parts) < 3 {
-		fmt.Println("❌ Invalid sendfile header")
-		return
+func handleShutdown() {
+	logger.Println("Executing SHUTDOWN")
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "windows":
+		cmd = exec.Command("shutdown", "/s", "/t", "0")
+	case "darwin":
+		cmd = exec.Command("sudo", "shutdown", "-h", "now")
+	default: // linux
+		cmd = exec.Command("sudo", "shutdown", "-h", "now")
 	}
-	filename := parts[1]
-	var size int
-	fmt.Sscanf(parts[2], "%d", &size)
+	if err := cmd.Run(); err != nil {
+		logger.Printf("Shutdown error: %v", err)
+	}
+}
 
-	fmt.Printf("📥 Receiving file: %s (%d bytes)\n", filename, size)
+// ─────────────────────────────────────────────
+//  FILE RECEIVE
+// ─────────────────────────────────────────────
+
+func handleReceiveFile(filename string, size int, reader *bufio.Reader) {
+	logger.Printf("Receiving file: %s (%d bytes)", filename, size)
+
+	// Save to received_files directory
+	os.MkdirAll("received_files", 0755)
+	destPath := filepath.Join("received_files", filepath.Base(filename))
 
 	data := make([]byte, size)
-	received := 0
-	for received < size {
-		n, err := reader.Read(data[received:])
-		if err != nil {
-			fmt.Println("❌ Error receiving file:", err)
-			return
-		}
-		received += n
-	}
-
-	// Save to received_files/ directory
-	os.MkdirAll("received_files", 0755)
-	savePath := filepath.Join("received_files", filename)
-	err := os.WriteFile(savePath, data, 0644)
+	_, err := io.ReadFull(reader, data)
 	if err != nil {
-		fmt.Println("❌ Failed to save file:", err)
+		logger.Printf("Error reading file data: %v", err)
 		return
 	}
-	fmt.Printf("✅ File saved to: %s\n", savePath)
+
+	if err := os.WriteFile(destPath, data, 0644); err != nil {
+		logger.Printf("Error saving file: %v", err)
+		return
+	}
+	logger.Printf("File saved to %s", destPath)
 }
 
 // ─────────────────────────────────────────────
-//  System Commands
+//  WALLPAPER
 // ─────────────────────────────────────────────
 
-func executeShutdown() {
-	fmt.Println("🔻 Executing shutdown...")
-	var cmd *exec.Cmd
-	if runtime.GOOS == "windows" {
-		cmd = exec.Command("shutdown", "/s", "/t", "0")
-	} else {
-		cmd = exec.Command("shutdown", "-h", "now")
-	}
-	err := cmd.Run()
+func handleWallpaper(filename string, size int, reader *bufio.Reader, conn net.Conn) {
+	logger.Printf("Receiving wallpaper: %s (%d bytes)", filename, size)
+
+	os.MkdirAll("received_files", 0755)
+	destPath := filepath.Join("received_files", filepath.Base(filename))
+
+	data := make([]byte, size)
+	_, err := io.ReadFull(reader, data)
 	if err != nil {
-		fmt.Println("❌ Shutdown failed:", err)
+		logger.Printf("Error reading wallpaper data: %v", err)
+		return
 	}
+
+	if err := os.WriteFile(destPath, data, 0644); err != nil {
+		logger.Printf("Error saving wallpaper: %v", err)
+		return
+	}
+
+	absPath, _ := filepath.Abs(destPath)
+	setWallpaper(absPath)
 }
 
-func changeBackground(path string) {
-	fmt.Println("🎨 Changing background to:", path)
+func setWallpaper(path string) {
+	logger.Printf("Setting wallpaper: %s", path)
 	var cmd *exec.Cmd
-	if runtime.GOOS == "windows" {
-		cmd = exec.Command("powershell", "-Command",
-			fmt.Sprintf(`Add-Type -TypeDefinition @'
-using System;
-using System.Runtime.InteropServices;
-public class Wallpaper {
-    [DllImport("user32.dll", CharSet = CharSet.Auto)]
-    public static extern int SystemParametersInfo(int uAction, int uParam, string lpvParam, int fuWinIni);
-}
-'@; [Wallpaper]::SystemParametersInfo(20, 0, '%s', 3)`, path))
-	} else if runtime.GOOS == "linux" {
+	switch runtime.GOOS {
+	case "windows":
+		// Use PowerShell to set wallpaper on Windows
+		script := fmt.Sprintf(`Add-Type -TypeDefinition 'using System;using System.Runtime.InteropServices;public class W{[DllImport("user32.dll")]public static extern int SystemParametersInfo(int a,int b,string c,int d);}'; [W]::SystemParametersInfo(20,0,"%s",3)`, path)
+		cmd = exec.Command("powershell", "-Command", script)
+	case "darwin":
+		script := fmt.Sprintf(`tell application "System Events" to tell every desktop to set picture to "%s"`, path)
+		cmd = exec.Command("osascript", "-e", script)
+	default: // linux (GNOME/KDE etc.)
 		cmd = exec.Command("gsettings", "set", "org.gnome.desktop.background", "picture-uri", "file://"+path)
-	} else if runtime.GOOS == "darwin" {
-		appleScript := fmt.Sprintf(`tell application "System Events" to set picture of every desktop to "%s"`, path)
-		cmd = exec.Command("osascript", "-e", appleScript)
 	}
-	err := cmd.Run()
-	if err != nil {
-		fmt.Println("❌ Failed to change background:", err)
+	if err := cmd.Run(); err != nil {
+		logger.Printf("Wallpaper set error: %v", err)
 	} else {
-		fmt.Println("✅ Background changed to:", path)
+		logger.Println("Wallpaper changed successfully")
 	}
+}
+
+// ─────────────────────────────────────────────
+//  QUERY (MapReduce – local compute)
+// ─────────────────────────────────────────────
+
+func handleQuery(query string, conn net.Conn) {
+	logger.Printf("Processing query: %s", query)
+
+	var result int
+	switch strings.ToUpper(query) {
+	case "COUNT":
+		// Return a simulated local record count (100–500)
+		result = 100 + rand.Intn(400)
+	case "SUM":
+		result = 1000 + rand.Intn(9000)
+	case "AVG":
+		result = 10 + rand.Intn(90)
+	default:
+		result = rand.Intn(200)
+	}
+
+	response := fmt.Sprintf("RESULT|%d\n", result)
+	conn.Write([]byte(response))
+	logger.Printf("Query result sent: %d", result)
+}
+
+// ─────────────────────────────────────────────
+//  HASH
+// ─────────────────────────────────────────────
+
+func handleHash(text string, difficulty int, conn net.Conn) {
+	logger.Printf("Starting hash: text='%s' difficulty=%d", text, difficulty)
+
+	prefix := strings.Repeat("0", difficulty)
+	attempts := 0
+	var finalHash string
+
+	for i := 0; ; i++ {
+		input := fmt.Sprintf("%d%s", i, text)
+		h := sha256.Sum256([]byte(input))
+		hash := fmt.Sprintf("%x", h)
+		attempts++
+		if strings.HasPrefix(hash, prefix) {
+			finalHash = hash
+			break
+		}
+		if attempts > 10_000_000 {
+			break
+		}
+	}
+
+	response := fmt.Sprintf("HASHRESULT|%s|%d\n", finalHash, attempts)
+	conn.Write([]byte(response))
+	logger.Printf("Hash found after %d attempts", attempts)
 }
