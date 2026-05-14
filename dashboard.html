@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Master Dashboard</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Segoe UI', sans-serif; background: #0f172a; color: #e2e8f0; min-height: 100vh; }
+  header { background: #1e293b; padding: 18px 30px; border-bottom: 2px solid #3b82f6; display: flex; align-items: center; gap: 14px; }
+  header h1 { font-size: 1.4rem; color: #60a5fa; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: #22c55e; animation: pulse 2s infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+
+  .container { max-width: 1100px; margin: 30px auto; padding: 0 20px; display: grid; gap: 20px; }
+
+  .card { background: #1e293b; border-radius: 12px; padding: 22px; border: 1px solid #334155; }
+  .card h2 { font-size: 1rem; color: #94a3b8; margin-bottom: 16px; text-transform: uppercase; letter-spacing: 1px; display: flex; align-items: center; gap: 8px; }
+
+  /* Snaps list */
+  #snap-list { display: flex; flex-wrap: wrap; gap: 10px; }
+  .snap-tag { background: #0f172a; border: 1px solid #3b82f6; border-radius: 8px; padding: 8px 14px; font-size: .85rem; display: flex; align-items: center; gap: 8px; }
+  .snap-tag span { color: #60a5fa; font-weight: 600; }
+  .snap-ip { color: #64748b; font-size: .78rem; }
+
+  /* Form rows */
+  .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-top: 10px; }
+  select, input[type=text], input[type=file] {
+    background: #0f172a; border: 1px solid #334155; color: #e2e8f0;
+    border-radius: 8px; padding: 9px 13px; font-size: .9rem; flex: 1; min-width: 160px;
+  }
+  input[type=file] { padding: 7px 13px; }
+  button {
+    background: #3b82f6; color: #fff; border: none; border-radius: 8px;
+    padding: 9px 20px; cursor: pointer; font-size: .9rem; font-weight: 600; transition: background .2s;
+  }
+  button:hover { background: #2563eb; }
+  button.danger { background: #ef4444; }
+  button.danger:hover { background: #dc2626; }
+  button.success { background: #22c55e; }
+  button.success:hover { background: #16a34a; }
+  button.purple { background: #8b5cf6; }
+  button.purple:hover { background: #7c3aed; }
+
+  /* Results */
+  .result-box {
+    margin-top: 14px; background: #0f172a; border-radius: 8px; padding: 14px;
+    font-size: .85rem; max-height: 260px; overflow-y: auto; border: 1px solid #334155;
+    white-space: pre-wrap; font-family: monospace; color: #a3e635; display: none;
+  }
+  .result-box.show { display: block; }
+
+  /* MapReduce result table */
+  .mr-table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: .85rem; }
+  .mr-table th { background: #1e293b; color: #94a3b8; padding: 8px 12px; text-align: left; border-bottom: 1px solid #334155; }
+  .mr-table td { padding: 8px 12px; border-bottom: 1px solid #1e293b; }
+  .mr-table tr:hover td { background: #1e293b55; }
+
+  /* Hash result */
+  .hash-result { background: #0f172a; border-radius: 8px; padding: 14px; margin-top: 12px; display: none; border: 1px solid #334155; }
+  .hash-result.show { display: block; }
+  .hash-pill { display: inline-block; background: #7c3aed22; border: 1px solid #7c3aed; color: #a78bfa; border-radius: 20px; padding: 3px 12px; font-size: .8rem; margin: 3px; }
+  .assigned { background: #16a34a22; border-color: #22c55e; color: #86efac; }
+
+  /* Toast */
+  #toast { position: fixed; bottom: 24px; right: 24px; background: #22c55e; color: #fff; padding: 12px 20px; border-radius: 10px; font-size: .9rem; display: none; z-index: 999; box-shadow: 0 4px 20px #0008; }
+  #toast.error { background: #ef4444; }
+</style>
+</head>
+<body>
+<header>
+  <div class="dot"></div>
+  <h1>🖥 Master Dashboard</h1>
+  <span style="margin-left:auto;font-size:.85rem;color:#64748b" id="snap-count">Loading...</span>
+</header>
+
+<div class="container">
+
+  <!-- Connected Snaps -->
+  <div class="card">
+    <h2>🟢 Connected Snaps</h2>
+    <div id="snap-list"><em style="color:#64748b">No snaps connected yet…</em></div>
+  </div>
+
+  <!-- Task 1a: Shutdown -->
+  <div class="card">
+    <h2>🔴 Shutdown Device</h2>
+    <div class="row">
+      <select id="shutdown-snap"><option value="ALL">All Snaps</option></select>
+      <button class="danger" onclick="doShutdown()">⚡ Shutdown</button>
+    </div>
+    <div class="result-box" id="shutdown-result"></div>
+  </div>
+
+  <!-- Task 1b: Change Background -->
+  <div class="card">
+    <h2>🖼 Change Wallpaper</h2>
+    <div class="row">
+      <select id="bg-snap"><option value="ALL">All Snaps</option></select>
+      <input type="text" id="bg-path" placeholder="e.g. C:\wallpaper.jpg or /home/user/bg.png"/>
+      <button onclick="doBackground()">🎨 Change Background</button>
+    </div>
+    <div class="result-box" id="bg-result"></div>
+  </div>
+
+  <!-- Task 1c: Send File -->
+  <div class="card">
+    <h2>📁 Send File to Snap</h2>
+    <div class="row">
+      <select id="file-snap"><option value="">— Select Snap —</option></select>
+      <input type="file" id="file-input"/>
+      <button class="success" onclick="doSendFile()">📤 Send File</button>
+    </div>
+    <div class="result-box" id="file-result"></div>
+  </div>
+
+  <!-- Task 2: MapReduce -->
+  <div class="card">
+    <h2>🗺 MapReduce — Distributed Search</h2>
+    <p style="color:#64748b;font-size:.82rem;margin-bottom:12px">
+      Sends query to <b>all snaps</b>. Each snap searches its local <code>data.txt</code> file.
+      Master collects &amp; merges all results (Reduce step).
+    </p>
+    <div class="row">
+      <input type="text" id="mr-query" placeholder="Search query e.g. hello"/>
+      <button class="purple" onclick="doMapReduce()">🔍 Run MapReduce</button>
+    </div>
+    <div id="mr-result" style="display:none;margin-top:14px">
+      <div style="color:#86efac;font-size:.9rem;margin-bottom:8px">
+        Total matches: <b id="mr-total">0</b>
+      </div>
+      <table class="mr-table">
+        <thead><tr><th>Snap</th><th>Matches</th><th>Lines Found</th></tr></thead>
+        <tbody id="mr-rows"></tbody>
+      </table>
+      <div style="margin-top:12px;color:#94a3b8;font-size:.82rem">All matching lines:</div>
+      <div class="result-box show" id="mr-lines" style="display:block"></div>
+    </div>
+  </div>
+
+  <!-- Task 3: Hashing -->
+  <div class="card">
+    <h2>🔑 Consistent Hashing</h2>
+    <p style="color:#64748b;font-size:.82rem;margin-bottom:12px">
+      Enter any key to see which snap it maps to using a consistent hash ring.
+      Virtual nodes (3 per snap) ensure even distribution.
+    </p>
+    <div class="row">
+      <input type="text" id="hash-key" placeholder="Enter key e.g. user:42 or file.txt"/>
+      <button onclick="doHash()">⚡ Lookup Hash</button>
+    </div>
+    <div class="hash-result" id="hash-result"></div>
+  </div>
+
+</div>
+
+<div id="toast"></div>
+
+<script>
+const API = '';
+
+function toast(msg, isErr=false) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.className = isErr ? 'error' : '';
+  t.style.display = 'block';
+  setTimeout(() => t.style.display='none', 3000);
+}
+
+function showResult(id, text, isErr=false) {
+  const el = document.getElementById(id);
+  el.textContent = text;
+  el.className = 'result-box show';
+  el.style.color = isErr ? '#f87171' : '#a3e635';
+}
+
+async function loadSnaps() {
+  try {
+    const res = await fetch('/api/snaps');
+    const snaps = await res.json();
+    
+    document.getElementById('snap-count').textContent = snaps.length + ' snap(s) online';
+    
+    const list = document.getElementById('snap-list');
+    if (snaps.length === 0) {
+      list.innerHTML = '<em style="color:#64748b">No snaps connected yet…</em>';
+    } else {
+      list.innerHTML = snaps.map(s => `
+        <div class="snap-tag">
+          <span>${s.name}</span>
+          <span class="snap-ip">${s.ip}</span>
+        </div>
+      `).join('');
+    }
+
+    // Update all snap selects
+    const opts = '<option value="ALL">All Snaps</option>' + snaps.map(s => `<option value="${s.name}">${s.name} (${s.ip})</option>`).join('');
+    document.getElementById('shutdown-snap').innerHTML = opts;
+    document.getElementById('bg-snap').innerHTML = opts;
+
+    const fileOpts = '<option value="">— Select Snap —</option>' + snaps.map(s => `<option value="${s.name}">${s.name} (${s.ip})</option>`).join('');
+    document.getElementById('file-snap').innerHTML = fileOpts;
+
+  } catch(e) {
+    console.error(e);
+  }
+}
+
+async function doShutdown() {
+  const snap = document.getElementById('shutdown-snap').value;
+  try {
+    const res = await fetch(`/api/shutdown?snap=${snap}`, {method:'POST'});
+    const data = await res.json();
+    showResult('shutdown-result', JSON.stringify(data, null, 2));
+    toast('Shutdown command sent!');
+  } catch(e) {
+    showResult('shutdown-result', 'Error: ' + e.message, true);
+    toast('Error: ' + e.message, true);
+  }
+}
+
+async function doBackground() {
+  const snap = document.getElementById('bg-snap').value;
+  const path = document.getElementById('bg-path').value.trim();
+  if (!path) { toast('Enter image path first!', true); return; }
+  try {
+    const res = await fetch(`/api/background?snap=${snap}&path=${encodeURIComponent(path)}`, {method:'POST'});
+    const data = await res.json();
+    showResult('bg-result', JSON.stringify(data, null, 2));
+    toast('Background command sent!');
+  } catch(e) {
+    showResult('bg-result', 'Error: ' + e.message, true);
+    toast('Error: ' + e.message, true);
+  }
+}
+
+async function doSendFile() {
+  const snap = document.getElementById('file-snap').value;
+  const fileInput = document.getElementById('file-input');
+  if (!snap) { toast('Select a snap first!', true); return; }
+  if (!fileInput.files.length) { toast('Select a file first!', true); return; }
+
+  const formData = new FormData();
+  formData.append('snap', snap);
+  formData.append('file', fileInput.files[0]);
+
+  showResult('file-result', '⏳ Uploading...');
+  try {
+    const res = await fetch('/api/sendfile', {method:'POST', body: formData});
+    const data = await res.json();
+    showResult('file-result', `✅ File sent!\nFilename: ${data.filename}\nSize: ${data.size} bytes\nTo: ${data.snap}`);
+    toast('File sent to ' + snap);
+  } catch(e) {
+    showResult('file-result', 'Error: ' + e.message, true);
+    toast('Error: ' + e.message, true);
+  }
+}
+
+async function doMapReduce() {
+  const query = document.getElementById('mr-query').value.trim();
+  if (!query) { toast('Enter a query first!', true); return; }
+
+  document.getElementById('mr-result').style.display = 'none';
+  try {
+    const res = await fetch(`/api/mapreduce?query=${encodeURIComponent(query)}`, {method:'POST'});
+    if (!res.ok) { toast(await res.text(), true); return; }
+    const data = await res.json();
+
+    document.getElementById('mr-total').textContent = data.totalCount;
+    const tbody = document.getElementById('mr-rows');
+    tbody.innerHTML = data.results.map(r => `
+      <tr>
+        <td>${r.snap}</td>
+        <td><b style="color:#86efac">${r.count}</b></td>
+        <td style="color:#94a3b8">${(r.lines||[]).join(' | ') || '—'}</td>
+      </tr>
+    `).join('');
+
+    document.getElementById('mr-lines').textContent = (data.allLines||[]).join('\n') || '(no matches)';
+    document.getElementById('mr-result').style.display = 'block';
+    toast(`MapReduce done — ${data.totalCount} total matches`);
+  } catch(e) {
+    toast('Error: ' + e.message, true);
+  }
+}
+
+async function doHash() {
+  const key = document.getElementById('hash-key').value.trim();
+  if (!key) { toast('Enter a key first!', true); return; }
+
+  try {
+    const res = await fetch(`/api/hash?key=${encodeURIComponent(key)}`);
+    const data = await res.json();
+
+    const el = document.getElementById('hash-result');
+    const snapPills = (data.snapHashes||[]).map(sh => `
+      <span class="hash-pill ${sh.name===data.assignedTo?'assigned':''}">
+        ${sh.name}: 0x${sh.hash}
+      </span>
+    `).join('');
+
+    el.innerHTML = `
+      <div style="margin-bottom:10px">
+        <span style="color:#94a3b8">Key:</span> <b style="color:#e2e8f0">${data.key}</b>
+        &nbsp;&nbsp;
+        <span style="color:#94a3b8">Hash:</span> <b style="color:#a78bfa">0x${data.hash}</b>
+      </div>
+      <div style="margin-bottom:10px">
+        <span style="color:#94a3b8">Assigned to:</span>
+        <b style="color:#86efac">${data.assignedTo || 'No snaps connected'}</b>
+      </div>
+      <div style="font-size:.82rem;color:#64748b;margin-bottom:8px">All snap positions on ring:</div>
+      <div>${snapPills || '<span style="color:#64748b">No snaps</span>'}</div>
+    `;
+    el.className = 'hash-result show';
+    toast('Hash lookup done!');
+  } catch(e) {
+    toast('Error: ' + e.message, true);
+  }
+}
+
+// Auto-refresh snaps every 3 seconds
+loadSnaps();
+setInterval(loadSnaps, 3000);
+</script>
+</body>
+</html>
