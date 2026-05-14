@@ -2,10 +2,9 @@ package main
 
 import (
 	"bufio"
-	"crypto/md5"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
-	"html/template"
 	"io"
 	"log"
 	"net"
@@ -19,490 +18,374 @@ import (
 )
 
 // ─────────────────────────────────────────────
-//  Data Structures
+//  Data structures
 // ─────────────────────────────────────────────
 
-type Snap struct {
-	IP      string
-	Name    string
-	Conn    net.Conn
-	ImgPath string
+// Client represents a connected Snap node
+type Client struct {
+	IP   string
+	Conn net.Conn
+	mu   sync.Mutex
 }
 
-// MapReduce result from each snap
-type MapResult struct {
-	SnapName string `json:"snap"`
-	Query    string `json:"query"`
-	Count    int    `json:"count"`
-	Lines    []string `json:"lines"`
-	Error    string `json:"error,omitempty"`
+// Send writes a line to the client safely
+func (c *Client) Send(msg string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	_, err := fmt.Fprintln(c.Conn, msg)
+	return err
 }
+
+// SendRaw writes raw bytes to the client safely
+func (c *Client) SendRaw(data []byte) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	_, err := c.Conn.Write(data)
+	return err
+}
+
+// ClientStore manages all connected clients thread-safely
+type ClientStore struct {
+	mu      sync.RWMutex
+	clients map[string]*Client // key = IP:port
+}
+
+func NewClientStore() *ClientStore {
+	return &ClientStore{clients: make(map[string]*Client)}
+}
+
+func (s *ClientStore) Add(c *Client) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.clients[c.IP] = c
+}
+
+func (s *ClientStore) Remove(ip string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.clients, ip)
+}
+
+func (s *ClientStore) Get(ip string) (*Client, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	c, ok := s.clients[ip]
+	return c, ok
+}
+
+func (s *ClientStore) All() []*Client {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	list := make([]*Client, 0, len(s.clients))
+	for _, c := range s.clients {
+		list = append(list, c)
+	}
+	return list
+}
+
+func (s *ClientStore) IPs() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	ips := make([]string, 0, len(s.clients))
+	for ip := range s.clients {
+		ips = append(ips, ip)
+	}
+	return ips
+}
+
+// ─────────────────────────────────────────────
+//  Globals
+// ─────────────────────────────────────────────
 
 var (
-	snaps     = make(map[string]*Snap)
-	snapsLock = sync.Mutex{}
-	logFile   *os.File
+	store   = NewClientStore()
+	logger  *log.Logger
+	logFile *os.File
 )
-
-// ─────────────────────────────────────────────
-//  Consistent Hashing Ring
-// ─────────────────────────────────────────────
-
-type HashRing struct {
-	nodes   []string
-	ring    map[uint32]string
-	sorted  []uint32
-	mu      sync.RWMutex
-}
-
-func NewHashRing() *HashRing {
-	return &HashRing{
-		ring: make(map[uint32]string),
-	}
-}
-
-func (hr *HashRing) hash(key string) uint32 {
-	h := md5.Sum([]byte(key))
-	return uint32(h[0])<<24 | uint32(h[1])<<16 | uint32(h[2])<<8 | uint32(h[3])
-}
-
-func (hr *HashRing) AddNode(node string) {
-	hr.mu.Lock()
-	defer hr.mu.Unlock()
-	// Add 3 virtual nodes per snap for better distribution
-	for i := 0; i < 3; i++ {
-		key := fmt.Sprintf("%s#%d", node, i)
-		h := hr.hash(key)
-		hr.ring[h] = node
-		hr.sorted = append(hr.sorted, h)
-	}
-	hr.nodes = append(hr.nodes, node)
-	sortUint32(hr.sorted)
-}
-
-func (hr *HashRing) RemoveNode(node string) {
-	hr.mu.Lock()
-	defer hr.mu.Unlock()
-	for i := 0; i < 3; i++ {
-		key := fmt.Sprintf("%s#%d", node, i)
-		h := hr.hash(key)
-		delete(hr.ring, h)
-		hr.sorted = removeUint32(hr.sorted, h)
-	}
-	hr.nodes = removeString(hr.nodes, node)
-}
-
-func (hr *HashRing) GetNode(key string) string {
-	hr.mu.RLock()
-	defer hr.mu.RUnlock()
-	if len(hr.ring) == 0 {
-		return ""
-	}
-	h := hr.hash(key)
-	for _, pos := range hr.sorted {
-		if h <= pos {
-			return hr.ring[pos]
-		}
-	}
-	return hr.ring[hr.sorted[0]]
-}
-
-func sortUint32(s []uint32) {
-	for i := 1; i < len(s); i++ {
-		for j := i; j > 0 && s[j] < s[j-1]; j-- {
-			s[j], s[j-1] = s[j-1], s[j]
-		}
-	}
-}
-
-func removeUint32(s []uint32, v uint32) []uint32 {
-	r := []uint32{}
-	for _, x := range s {
-		if x != v {
-			r = append(r, x)
-		}
-	}
-	return r
-}
-
-func removeString(s []string, v string) []string {
-	r := []string{}
-	for _, x := range s {
-		if x != v {
-			r = append(r, x)
-		}
-	}
-	return r
-}
-
-var hashRing = NewHashRing()
 
 // ─────────────────────────────────────────────
 //  Logging
 // ─────────────────────────────────────────────
 
-func logAction(format string, args ...interface{}) {
-	msg := fmt.Sprintf("[%s] %s\n", time.Now().Format("2006-01-02 15:04:05"), fmt.Sprintf(format, args...))
-	fmt.Print(msg)
-	if logFile != nil {
-		logFile.WriteString(msg)
+func initLogger() {
+	var err error
+	logFile, err = os.OpenFile("log.txt", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		log.Fatal("Cannot open log.txt:", err)
 	}
+	multi := io.MultiWriter(logFile, os.Stdout)
+	logger = log.New(multi, "[MASTER] ", log.LstdFlags)
+}
+
+func logEvent(format string, args ...interface{}) {
+	logger.Printf(format, args...)
 }
 
 // ─────────────────────────────────────────────
-//  TCP Server - Snap Connections
+//  TCP Server – accept Snap connections
 // ─────────────────────────────────────────────
 
-func startTCPServer() {
-	ln, err := net.Listen("tcp", ":8082")
+func startTCPServer(port string) {
+	ln, err := net.Listen("tcp", ":"+port)
 	if err != nil {
-		log.Fatal("TCP listen error:", err)
+		logger.Fatal("TCP listen error:", err)
 	}
-	logAction("TCP server listening on :8082")
+	logEvent("TCP server listening on port %s", port)
+
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
+			logEvent("Accept error: %v", err)
 			continue
 		}
 		go handleSnap(conn)
 	}
 }
 
+// handleSnap manages one connected Snap node
 func handleSnap(conn net.Conn) {
-	reader := bufio.NewReader(conn)
-	// First message: "online|snap-name"
-	line, err := reader.ReadString('\n')
-	if err != nil {
+	ip := conn.RemoteAddr().String()
+	client := &Client{IP: ip, Conn: conn}
+	store.Add(client)
+	logEvent("Snap connected: %s", ip)
+
+	defer func() {
 		conn.Close()
-		return
-	}
-	line = strings.TrimSpace(line)
-	parts := strings.SplitN(line, "|", 2)
-	if len(parts) < 2 || parts[0] != "online" {
-		conn.Close()
-		return
-	}
-	name := parts[1]
-	ip := conn.RemoteAddr().(*net.TCPAddr).IP.String()
+		store.Remove(ip)
+		logEvent("Snap disconnected: %s", ip)
+	}()
 
-	snap := &Snap{IP: ip, Name: name, Conn: conn}
-
-	snapsLock.Lock()
-	snaps[name] = snap
-	snapsLock.Unlock()
-
-	hashRing.AddNode(name)
-	logAction("Snap connected: %s (%s)", name, ip)
-
-	// Keep reading incoming messages from snap (imgpath, mapresult, etc.)
-	for {
-		msg, err := reader.ReadString('\n')
-		if err != nil {
-			break
-		}
-		msg = strings.TrimSpace(msg)
-		handleSnapMessage(name, msg)
-	}
-
-	snapsLock.Lock()
-	delete(snaps, name)
-	snapsLock.Unlock()
-	hashRing.RemoveNode(name)
-	logAction("Snap disconnected: %s", name)
-	conn.Close()
-}
-
-// Channel to collect MapReduce results
-var mapResultChan = make(chan MapResult, 100)
-
-func handleSnapMessage(snapName, msg string) {
-	if strings.HasPrefix(msg, "imgpath|") {
-		path := strings.TrimPrefix(msg, "imgpath|")
-		snapsLock.Lock()
-		if s, ok := snaps[snapName]; ok {
-			s.ImgPath = path
-		}
-		snapsLock.Unlock()
-		logAction("Snap %s sent image path: %s", snapName, path)
-	} else if strings.HasPrefix(msg, "mapresult|") {
-		// Format: mapresult|<json>
-		jsonStr := strings.TrimPrefix(msg, "mapresult|")
-		var result MapResult
-		if err := json.Unmarshal([]byte(jsonStr), &result); err == nil {
-			result.SnapName = snapName
-			mapResultChan <- result
-		}
-	} else {
-		logAction("Message from %s: %s", snapName, msg)
+	// Just keep the connection alive; commands are pushed from HTTP handlers
+	scanner := bufio.NewScanner(conn)
+	for scanner.Scan() {
+		line := scanner.Text()
+		logEvent("Message from %s: %s", ip, line)
 	}
 }
 
 // ─────────────────────────────────────────────
-//  Send Command Helpers
+//  HTTP API handlers
 // ─────────────────────────────────────────────
 
-func sendCommand(snapName, cmd string) error {
-	snapsLock.Lock()
-	s, ok := snaps[snapName]
-	snapsLock.Unlock()
-	if !ok {
-		return fmt.Errorf("snap %s not found", snapName)
-	}
-	_, err := fmt.Fprintf(s.Conn, cmd+"\n")
-	return err
-}
-
-// ─────────────────────────────────────────────
-//  HTTP Handlers
-// ─────────────────────────────────────────────
-
-func indexHandler(w http.ResponseWriter, r *http.Request) {
-	tmpl, err := template.ParseFiles("static/dashboard.html")
-	if err != nil {
-		http.Error(w, "Template error: "+err.Error(), 500)
-		return
-	}
-	snapsLock.Lock()
-	snapList := []map[string]string{}
-	for name, s := range snaps {
-		snapList = append(snapList, map[string]string{
-			"name": name,
-			"ip":   s.IP,
-		})
-	}
-	snapsLock.Unlock()
-	tmpl.Execute(w, snapList)
-}
-
-// GET /api/snaps — list connected snaps
-func apiSnaps(w http.ResponseWriter, r *http.Request) {
-	snapsLock.Lock()
-	list := []map[string]string{}
-	for name, s := range snaps {
-		list = append(list, map[string]string{"name": name, "ip": s.IP})
-	}
-	snapsLock.Unlock()
+// CORS + JSON helpers
+func jsonOK(w http.ResponseWriter, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(list)
+	json.NewEncoder(w).Encode(data)
 }
 
-// POST /api/shutdown?snap=snap-01  (snap=ALL for all)
-func shutdownHandler(w http.ResponseWriter, r *http.Request) {
-	target := r.URL.Query().Get("snap")
-	results := map[string]string{}
-
-	snapsLock.Lock()
-	targets := []string{}
-	if target == "ALL" {
-		for name := range snaps {
-			targets = append(targets, name)
-		}
-	} else {
-		targets = append(targets, target)
-	}
-	snapsLock.Unlock()
-
-	for _, name := range targets {
-		if err := sendCommand(name, "shutdown"); err != nil {
-			results[name] = "error: " + err.Error()
-		} else {
-			results[name] = "shutdown sent"
-			logAction("Shutdown sent to %s", name)
-		}
-	}
+func jsonErr(w http.ResponseWriter, msg string, code int) {
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(results)
+	w.WriteHeader(code)
+	json.NewEncoder(w).Encode(map[string]string{"error": msg})
 }
 
-// POST /api/background?snap=snap-01&path=/path/to/img.jpg
-func backgroundHandler(w http.ResponseWriter, r *http.Request) {
-	target := r.URL.Query().Get("snap")
-	path := r.URL.Query().Get("path")
-	if path == "" {
-		http.Error(w, "missing path", 400)
-		return
-	}
-	results := map[string]string{}
-
-	snapsLock.Lock()
-	targets := []string{}
-	if target == "ALL" {
-		for name := range snaps {
-			targets = append(targets, name)
-		}
-	} else {
-		targets = append(targets, target)
-	}
-	snapsLock.Unlock()
-
-	for _, name := range targets {
-		cmd := "background|" + path
-		if err := sendCommand(name, cmd); err != nil {
-			results[name] = "error: " + err.Error()
-		} else {
-			results[name] = "background command sent"
-			logAction("Background changed on %s to %s", name, path)
-		}
-	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(results)
+// GET /api/clients  – list connected Snap nodes
+func handleListClients(w http.ResponseWriter, r *http.Request) {
+	ips := store.IPs()
+	jsonOK(w, map[string]interface{}{"clients": ips})
 }
 
-// POST /api/sendfile — multipart upload, then stream to snap
-// Form fields: snap=snap-01, file=<binary>
-func sendFileHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "POST only", 405)
+// POST /api/shutdown  body: {"target":"ALL"} or {"target":"192.168.1.5:PORT"}
+func handleShutdown(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Target string `json:"target"`
+	}
+	json.NewDecoder(r.Body).Decode(&req)
+
+	targets := resolveTargets(req.Target)
+	if len(targets) == 0 {
+		jsonErr(w, "no matching clients", 400)
 		return
 	}
-	r.ParseMultipartForm(100 << 20) // 100 MB max
-
-	snapName := r.FormValue("snap")
-	if snapName == "" {
-		http.Error(w, "missing snap", 400)
-		return
+	for _, c := range targets {
+		c.Send("SHUTDOWN")
+		logEvent("SHUTDOWN sent to %s", c.IP)
 	}
+	jsonOK(w, map[string]string{"status": "sent", "targets": fmt.Sprintf("%d", len(targets))})
+}
 
+// POST /api/sendfile  – multipart: target + file
+func handleSendFile(w http.ResponseWriter, r *http.Request) {
+	r.ParseMultipartForm(50 << 20) // 50 MB
+	target := r.FormValue("target")
 	file, header, err := r.FormFile("file")
 	if err != nil {
-		http.Error(w, "missing file: "+err.Error(), 400)
+		jsonErr(w, "file required: "+err.Error(), 400)
 		return
 	}
 	defer file.Close()
 
-	// Read file bytes
 	data, err := io.ReadAll(file)
 	if err != nil {
-		http.Error(w, "read error: "+err.Error(), 500)
+		jsonErr(w, "read error", 500)
 		return
 	}
 
-	snapsLock.Lock()
-	s, ok := snaps[snapName]
-	snapsLock.Unlock()
-	if !ok {
-		http.Error(w, "snap not found", 404)
+	targets := resolveTargets(target)
+	if len(targets) == 0 {
+		jsonErr(w, "no matching clients", 400)
 		return
 	}
-
-	// Protocol:
-	// MASTER → SNAP: "sendfile|<filename>|<size>\n"
-	// MASTER → SNAP: <binary data>
-	filename := filepath.Base(header.Filename)
-	size := len(data)
-	header2 := fmt.Sprintf("sendfile|%s|%d\n", filename, size)
-	s.Conn.Write([]byte(header2))
-	s.Conn.Write(data)
-
-	logAction("Sent file '%s' (%d bytes) to %s", filename, size, snapName)
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{
-		"status":   "ok",
-		"filename": filename,
-		"size":     strconv.Itoa(size),
-		"snap":     snapName,
-	})
+	for _, c := range targets {
+		sendFileTo(c, header.Filename, data)
+		logEvent("FILE %s sent to %s", header.Filename, c.IP)
+	}
+	jsonOK(w, map[string]string{"status": "sent"})
 }
 
-// POST /api/mapreduce?query=hello  — sends query to ALL snaps, collects results
-func mapReduceHandler(w http.ResponseWriter, r *http.Request) {
-	query := r.URL.Query().Get("query")
-	if query == "" {
-		query = r.FormValue("query")
+func sendFileTo(c *Client, filename string, data []byte) {
+	cmd := fmt.Sprintf("FILE|%s|%d", filename, len(data))
+	c.Send(cmd)
+	time.Sleep(50 * time.Millisecond) // let snap prepare
+	c.SendRaw(data)
+}
+
+// POST /api/wallpaper  – multipart: target + file (image)
+func handleWallpaper(w http.ResponseWriter, r *http.Request) {
+	r.ParseMultipartForm(50 << 20)
+	target := r.FormValue("target")
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		jsonErr(w, "file required", 400)
+		return
 	}
-	if query == "" {
-		http.Error(w, "missing query", 400)
+	defer file.Close()
+
+	data, err := io.ReadAll(file)
+	if err != nil {
+		jsonErr(w, "read error", 500)
 		return
 	}
 
-	snapsLock.Lock()
-	snapNames := []string{}
-	for name := range snaps {
-		snapNames = append(snapNames, name)
+	targets := resolveTargets(target)
+	if len(targets) == 0 {
+		jsonErr(w, "no matching clients", 400)
+		return
 	}
-	snapsLock.Unlock()
+	for _, c := range targets {
+		cmd := fmt.Sprintf("WALLPAPER|%s|%d", header.Filename, len(data))
+		c.Send(cmd)
+		time.Sleep(50 * time.Millisecond)
+		c.SendRaw(data)
+		logEvent("WALLPAPER %s sent to %s", header.Filename, c.IP)
+	}
+	jsonOK(w, map[string]string{"status": "sent"})
+}
 
-	if len(snapNames) == 0 {
-		http.Error(w, "no snaps connected", 503)
+// POST /api/query  body: {"query":"COUNT"}
+func handleQuery(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Query string `json:"query"`
+	}
+	json.NewDecoder(r.Body).Decode(&req)
+	if req.Query == "" {
+		jsonErr(w, "query required", 400)
 		return
 	}
 
-	// Send query to all snaps
-	for _, name := range snapNames {
-		sendCommand(name, "mapreduce|"+query)
-		logAction("MapReduce query '%s' sent to %s", query, name)
+	clients := store.All()
+	if len(clients) == 0 {
+		jsonOK(w, map[string]interface{}{"total": 0, "results": []interface{}{}})
+		return
 	}
 
-	// Collect results with timeout
-	results := []MapResult{}
-	timeout := time.After(10 * time.Second)
-	expected := len(snapNames)
-	received := 0
+	type result struct {
+		IP  string
+		Val int
+	}
 
-	for received < expected {
-		select {
-		case result := <-mapResultChan:
-			results = append(results, result)
-			received++
-		case <-timeout:
-			logAction("MapReduce timeout: got %d/%d results", received, expected)
-			goto done
+	resultCh := make(chan result, len(clients))
+	var wg sync.WaitGroup
+
+	for _, c := range clients {
+		wg.Add(1)
+		go func(cl *Client) {
+			defer wg.Done()
+			// Send query command
+			cl.Send("QUERY|" + req.Query)
+			// Read response with timeout
+			cl.Conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+			defer cl.Conn.SetReadDeadline(time.Time{})
+
+			scanner := bufio.NewScanner(cl.Conn)
+			if scanner.Scan() {
+				line := scanner.Text()
+				if strings.HasPrefix(line, "RESULT|") {
+					parts := strings.SplitN(line, "|", 2)
+					val, _ := strconv.Atoi(parts[1])
+					resultCh <- result{IP: cl.IP, Val: val}
+					logEvent("RESULT from %s: %s", cl.IP, parts[1])
+				}
+			}
+		}(c)
+	}
+
+	wg.Wait()
+	close(resultCh)
+
+	total := 0
+	var details []map[string]interface{}
+	for r := range resultCh {
+		total += r.Val
+		details = append(details, map[string]interface{}{"ip": r.IP, "value": r.Val})
+	}
+
+	logEvent("MapReduce query '%s' total=%d", req.Query, total)
+	jsonOK(w, map[string]interface{}{"total": total, "results": details})
+}
+
+// POST /api/hash  body: {"text":"hello","difficulty":3}
+func handleHash(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Text       string `json:"text"`
+		Difficulty int    `json:"difficulty"`
+	}
+	json.NewDecoder(r.Body).Decode(&req)
+	if req.Text == "" || req.Difficulty < 1 {
+		jsonErr(w, "text and difficulty required", 400)
+		return
+	}
+
+	prefix := strings.Repeat("0", req.Difficulty)
+	attempts := 0
+	var finalHash string
+
+	for i := 0; ; i++ {
+		input := fmt.Sprintf("%d%s", i, req.Text)
+		h := sha256.Sum256([]byte(input))
+		hash := fmt.Sprintf("%x", h)
+		attempts++
+		if strings.HasPrefix(hash, prefix) {
+			finalHash = hash
+			break
+		}
+		// Safety cap: 10 million attempts
+		if attempts > 10_000_000 {
+			jsonErr(w, "max attempts reached", 500)
+			return
 		}
 	}
-done:
-	// Reduce: merge all results
-	totalCount := 0
-	allLines := []string{}
-	for _, r := range results {
-		totalCount += r.Count
-		allLines = append(allLines, r.Lines...)
-	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"query":      query,
-		"totalCount": totalCount,
-		"allLines":   allLines,
-		"results":    results,
+	logEvent("HASH text='%s' difficulty=%d attempts=%d", req.Text, req.Difficulty, attempts)
+	jsonOK(w, map[string]interface{}{
+		"hash":     finalHash,
+		"attempts": attempts,
 	})
 }
 
-// GET /api/hash?key=somekey — show which snap handles this key
-func hashHandler(w http.ResponseWriter, r *http.Request) {
-	key := r.URL.Query().Get("key")
-	if key == "" {
-		http.Error(w, "missing key", 400)
-		return
+// ─────────────────────────────────────────────
+//  Helpers
+// ─────────────────────────────────────────────
+
+// resolveTargets returns the clients matching the target string
+func resolveTargets(target string) []*Client {
+	if strings.ToUpper(target) == "ALL" {
+		return store.All()
 	}
-
-	node := hashRing.GetNode(key)
-	h := md5.Sum([]byte(key))
-	hashVal := fmt.Sprintf("%08x", uint32(h[0])<<24|uint32(h[1])<<16|uint32(h[2])<<8|uint32(h[3]))
-
-	// Build ring info
-	snapsLock.Lock()
-	snapNames := []string{}
-	for name := range snaps {
-		snapNames = append(snapNames, name)
+	if c, ok := store.Get(target); ok {
+		return []*Client{c}
 	}
-	snapsLock.Unlock()
-
-	snapHashes := []map[string]string{}
-	for _, name := range snapNames {
-		sh := md5.Sum([]byte(name + "#0"))
-		snapHashes = append(snapHashes, map[string]string{
-			"name": name,
-			"hash": fmt.Sprintf("%08x", uint32(sh[0])<<24|uint32(sh[1])<<16|uint32(sh[2])<<8|uint32(sh[3])),
-		})
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"key":        key,
-		"hash":       hashVal,
-		"assignedTo": node,
-		"snapHashes": snapHashes,
-	})
+	return nil
 }
 
 // ─────────────────────────────────────────────
@@ -510,24 +393,32 @@ func hashHandler(w http.ResponseWriter, r *http.Request) {
 // ─────────────────────────────────────────────
 
 func main() {
-	var err error
-	logFile, err = os.OpenFile("log.txt", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		log.Println("Warning: could not open log file:", err)
-	} else {
-		defer logFile.Close()
+	initLogger()
+	defer logFile.Close()
+
+	logEvent("Master node starting...")
+
+	// TCP server for Snap nodes on port 9000
+	go startTCPServer("9000")
+
+	// HTTP API + static dashboard on port 8080
+	mux := http.NewServeMux()
+
+	// Serve dashboard
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		http.ServeFile(w, r, filepath.Join("static", "dashboard.html"))
+	})
+
+	// API routes
+	mux.HandleFunc("/api/clients", handleListClients)
+	mux.HandleFunc("/api/shutdown", handleShutdown)
+	mux.HandleFunc("/api/sendfile", handleSendFile)
+	mux.HandleFunc("/api/wallpaper", handleWallpaper)
+	mux.HandleFunc("/api/query", handleQuery)
+	mux.HandleFunc("/api/hash", handleHash)
+
+	logEvent("HTTP dashboard on http://localhost:8080")
+	if err := http.ListenAndServe(":8080", mux); err != nil {
+		logger.Fatal("HTTP server error:", err)
 	}
-
-	go startTCPServer()
-
-	http.HandleFunc("/", indexHandler)
-	http.HandleFunc("/api/snaps", apiSnaps)
-	http.HandleFunc("/api/shutdown", shutdownHandler)
-	http.HandleFunc("/api/background", backgroundHandler)
-	http.HandleFunc("/api/sendfile", sendFileHandler)
-	http.HandleFunc("/api/mapreduce", mapReduceHandler)
-	http.HandleFunc("/api/hash", hashHandler)
-
-	logAction("HTTP dashboard on http://localhost:8080")
-	log.Fatal(http.ListenAndServe(":8080", nil))
 }
