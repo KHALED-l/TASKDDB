@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -21,14 +22,13 @@ import (
 //  Data structures
 // ─────────────────────────────────────────────
 
-// Client represents a connected Snap node
 type Client struct {
-	IP   string
-	Conn net.Conn
-	mu   sync.Mutex
+	IP       string
+	Conn     net.Conn
+	mu       sync.Mutex
+	resultCh chan string
 }
 
-// Send writes a line to the client safely
 func (c *Client) Send(msg string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -36,7 +36,6 @@ func (c *Client) Send(msg string) error {
 	return err
 }
 
-// SendRaw writes raw bytes to the client safely
 func (c *Client) SendRaw(data []byte) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -44,10 +43,9 @@ func (c *Client) SendRaw(data []byte) error {
 	return err
 }
 
-// ClientStore manages all connected clients thread-safely
 type ClientStore struct {
 	mu      sync.RWMutex
-	clients map[string]*Client // key = IP:port
+	clients map[string]*Client
 }
 
 func NewClientStore() *ClientStore {
@@ -101,7 +99,154 @@ var (
 	store   = NewClientStore()
 	logger  *log.Logger
 	logFile *os.File
+
+	miningMu     sync.Mutex
+	activeMining *miningSession
 )
+
+type miningJobPayload struct {
+	Text       string `json:"text"`
+	Difficulty int    `json:"difficulty"`
+	NonceStart int    `json:"nonce_start"`
+	NonceEnd   int    `json:"nonce_end"`
+	WorkerID   int    `json:"worker_id"`
+}
+
+type miningSession struct {
+	clients         []*Client
+	expectedWorkers int
+	found           sync.WaitGroup
+	foundOnce       sync.Once
+	mu              sync.Mutex
+	result          map[string]any
+	exhausted       int
+	statsMu         sync.Mutex
+	stats           map[int]int64
+	startTime       time.Time
+}
+
+func newMiningSession(clients []*Client) *miningSession {
+	s := &miningSession{
+		clients:         clients,
+		expectedWorkers: len(clients),
+		stats:           make(map[int]int64),
+	}
+	s.found.Add(1)
+	s.startTime = time.Now()
+	return s
+}
+
+func (s *miningSession) broadcastStop() {
+	logEvent("Mining: broadcasting STOP to all workers")
+	for _, c := range s.clients {
+		if err := c.Send("STOP"); err != nil {
+			logEvent("Mining: STOP send error to %s: %v", c.IP, err)
+		}
+	}
+}
+
+func (s *miningSession) signalDone() {
+	s.foundOnce.Do(func() { s.found.Done() })
+}
+
+func (s *miningSession) onWorkerLine(line string) {
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return
+	}
+	parts := strings.Split(line, "|")
+	if len(parts) == 0 {
+		return
+	}
+	kind := strings.ToUpper(parts[0])
+
+	switch kind {
+	case "PROGRESS":
+		if len(parts) >= 4 {
+			wid, _ := strconv.Atoi(parts[1])
+			nonce, _ := strconv.Atoi(parts[2])
+			attempts, _ := strconv.ParseInt(parts[3], 10, 64)
+			logEvent("Mining progress: worker=%d nonce=%d attempts_in_range=%d", wid, nonce, attempts)
+		}
+	case "FOUND":
+		if len(parts) >= 5 {
+			wid, _ := strconv.Atoi(parts[1])
+			nonce, _ := strconv.Atoi(parts[2])
+			digest := parts[3]
+			attempts, _ := strconv.ParseInt(parts[4], 10, 64)
+			logEvent("Mining FOUND: worker=%d nonce=%d hash=%s attempts=%d", wid, nonce, digest, attempts)
+			s.mu.Lock()
+			if s.result == nil {
+				s.result = map[string]any{
+					"worker_id":       wid,
+					"nonce":           nonce,
+					"hash":            digest,
+					"finder_attempts": attempts,
+				}
+				s.mu.Unlock()
+				s.broadcastStop()
+				s.signalDone()
+			} else {
+				s.mu.Unlock()
+			}
+		}
+	case "EXHAUSTED":
+		if len(parts) >= 3 {
+			wid, _ := strconv.Atoi(parts[1])
+			attempts, _ := strconv.ParseInt(parts[2], 10, 64)
+			logEvent("Mining EXHAUSTED: worker=%d attempts=%d", wid, attempts)
+			s.mu.Lock()
+			s.exhausted++
+			done := s.exhausted >= s.expectedWorkers
+			s.mu.Unlock()
+			if done {
+				s.broadcastStop()
+				s.signalDone()
+			}
+		}
+	case "STATS":
+		if len(parts) >= 3 {
+			wid, _ := strconv.Atoi(parts[1])
+			attempts, _ := strconv.ParseInt(parts[2], 10, 64)
+			s.statsMu.Lock()
+			s.stats[wid] = attempts
+			s.statsMu.Unlock()
+			logEvent("Mining STATS: worker=%d total_attempts=%d", wid, attempts)
+		}
+	}
+}
+
+func (s *miningSession) waitForStats(timeout time.Duration) {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		s.statsMu.Lock()
+		n := len(s.stats)
+		s.statsMu.Unlock()
+		if n >= s.expectedWorkers {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+func isMiningSnapLine(line string) bool {
+	u := strings.ToUpper(strings.TrimSpace(line))
+	return strings.HasPrefix(u, "PROGRESS|") ||
+		strings.HasPrefix(u, "FOUND|") ||
+		strings.HasPrefix(u, "EXHAUSTED|") ||
+		strings.HasPrefix(u, "STATS|")
+}
+
+func miningNonceRanges(n, rangeWidth int) [][2]int {
+	ranges := make([][2]int, 0, n)
+	start := 0
+	for i := 0; i < n; i++ {
+		end := start + rangeWidth - 1
+		ranges = append(ranges, [2]int{start, end})
+		start = end + 1
+	}
+	return ranges
+}
 
 // ─────────────────────────────────────────────
 //  Logging
@@ -122,7 +267,7 @@ func logEvent(format string, args ...interface{}) {
 }
 
 // ─────────────────────────────────────────────
-//  TCP Server – accept Snap connections
+//  TCP Server
 // ─────────────────────────────────────────────
 
 func startTCPServer(port string) {
@@ -142,10 +287,13 @@ func startTCPServer(port string) {
 	}
 }
 
-// handleSnap manages one connected Snap node
 func handleSnap(conn net.Conn) {
 	ip := conn.RemoteAddr().String()
-	client := &Client{IP: ip, Conn: conn}
+	client := &Client{
+		IP:       ip,
+		Conn:     conn,
+		resultCh: make(chan string, 64),
+	}
 	store.Add(client)
 	logEvent("Snap connected: %s", ip)
 
@@ -155,19 +303,53 @@ func handleSnap(conn net.Conn) {
 		logEvent("Snap disconnected: %s", ip)
 	}()
 
-	// Just keep the connection alive; commands are pushed from HTTP handlers
 	scanner := bufio.NewScanner(conn)
+	buf := make([]byte, 0, 64*1024)
+	scanner.Buffer(buf, 1024*1024)
+
 	for scanner.Scan() {
 		line := scanner.Text()
+		miningMu.Lock()
+		sess := activeMining
+		miningMu.Unlock()
+		if sess != nil && isMiningSnapLine(line) {
+			sess.onWorkerLine(line)
+			continue
+		}
+		if strings.HasPrefix(line, "RESULT|") || strings.HasPrefix(line, "HASHRESULT|") {
+			select {
+			case client.resultCh <- line:
+				logEvent("Snap reply queued from %s: %s", ip, line)
+			default:
+				logEvent("Snap reply dropped (buffer full) from %s: %s", ip, line)
+			}
+			continue
+		}
 		logEvent("Message from %s: %s", ip, line)
 	}
+	if err := scanner.Err(); err != nil {
+		logEvent("Snap read error %s: %v", ip, err)
+	}
+}
+
+// ─────────────────────────────────────────────
+//  MapReduce Helper (Split Lines)
+// ─────────────────────────────────────────────
+
+func splitLines(lines []string, workers int) [][]string {
+	chunks := make([][]string, workers)
+	for i := 0; i < workers; i++ {
+		start := i * len(lines) / workers
+		end := (i + 1) * len(lines) / workers
+		chunks[i] = lines[start:end]
+	}
+	return chunks
 }
 
 // ─────────────────────────────────────────────
 //  HTTP API handlers
 // ─────────────────────────────────────────────
 
-// CORS + JSON helpers
 func jsonOK(w http.ResponseWriter, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(data)
@@ -179,13 +361,11 @@ func jsonErr(w http.ResponseWriter, msg string, code int) {
 	json.NewEncoder(w).Encode(map[string]string{"error": msg})
 }
 
-// GET /api/clients  – list connected Snap nodes
 func handleListClients(w http.ResponseWriter, r *http.Request) {
 	ips := store.IPs()
 	jsonOK(w, map[string]interface{}{"clients": ips})
 }
 
-// POST /api/shutdown  body: {"target":"ALL"} or {"target":"192.168.1.5:PORT"}
 func handleShutdown(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Target string `json:"target"`
@@ -204,9 +384,8 @@ func handleShutdown(w http.ResponseWriter, r *http.Request) {
 	jsonOK(w, map[string]string{"status": "sent", "targets": fmt.Sprintf("%d", len(targets))})
 }
 
-// POST /api/sendfile  – multipart: target + file
 func handleSendFile(w http.ResponseWriter, r *http.Request) {
-	r.ParseMultipartForm(50 << 20) // 50 MB
+	r.ParseMultipartForm(50 << 20)
 	target := r.FormValue("target")
 	file, header, err := r.FormFile("file")
 	if err != nil {
@@ -236,11 +415,10 @@ func handleSendFile(w http.ResponseWriter, r *http.Request) {
 func sendFileTo(c *Client, filename string, data []byte) {
 	cmd := fmt.Sprintf("FILE|%s|%d", filename, len(data))
 	c.Send(cmd)
-	time.Sleep(50 * time.Millisecond) // let snap prepare
+	time.Sleep(50 * time.Millisecond)
 	c.SendRaw(data)
 }
 
-// POST /api/wallpaper  – multipart: target + file (image)
 func handleWallpaper(w http.ResponseWriter, r *http.Request) {
 	r.ParseMultipartForm(50 << 20)
 	target := r.FormValue("target")
@@ -272,69 +450,221 @@ func handleWallpaper(w http.ResponseWriter, r *http.Request) {
 	jsonOK(w, map[string]string{"status": "sent"})
 }
 
-// POST /api/query  body: {"query":"COUNT"}
 func handleQuery(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Query string `json:"query"`
 	}
 	json.NewDecoder(r.Body).Decode(&req)
-	if req.Query == "" {
-		jsonErr(w, "query required", 400)
+	qnorm, ok := normalizeMapReduceQuery(req.Query)
+	if !ok {
+		jsonErr(w, "supported queries: COUNT, SUM, AVG", 400)
 		return
 	}
 
 	clients := store.All()
 	if len(clients) == 0 {
-		jsonOK(w, map[string]interface{}{"total": 0, "results": []interface{}{}})
+		jsonOK(w, map[string]interface{}{
+			"query":   qnorm,
+			"results": []interface{}{},
+			"total":   0,
+			"message": "no connected snap nodes",
+		})
 		return
 	}
 
-	type result struct {
-		IP  string
-		Val int
+	// 1. Read data.sql as raw lines
+	content, err := os.ReadFile("data.sql")
+	if err != nil {
+		jsonErr(w, "failed to read data.sql: "+err.Error(), 500)
+		return
+	}
+	lines := strings.Split(string(content), "\n")
+
+	// 2. Split lines using the new function
+	chunks := splitLines(lines, len(clients))
+	sort.Slice(clients, func(i, j int) bool { return clients[i].IP < clients[j].IP })
+
+	logEvent("MapReduce: distributing %d lines to %d Snap node(s)", len(lines), len(clients))
+
+	type nodeOut struct {
+		IP       string `json:"ip"`
+		Value    int    `json:"value"`
+		LocalSum int    `json:"local_sum,omitempty"`
+		LocalCnt int    `json:"local_count,omitempty"`
+		Raw      string `json:"raw,omitempty"`
+		Error    string `json:"error,omitempty"`
 	}
 
-	resultCh := make(chan result, len(clients))
-	var wg sync.WaitGroup
+	outCh := make(chan nodeOut, len(clients))
+	for i, c := range clients {
+		go func(idx int, cl *Client) {
+			drainSnapReplies(cl)
 
-	for _, c := range clients {
-		wg.Add(1)
-		go func(cl *Client) {
-			defer wg.Done()
-			// Send query command
-			cl.Send("QUERY|" + req.Query)
-			// Read response with timeout
-			cl.Conn.SetReadDeadline(time.Now().Add(5 * time.Second))
-			defer cl.Conn.SetReadDeadline(time.Time{})
-
-			scanner := bufio.NewScanner(cl.Conn)
-			if scanner.Scan() {
-				line := scanner.Text()
-				if strings.HasPrefix(line, "RESULT|") {
-					parts := strings.SplitN(line, "|", 2)
-					val, _ := strconv.Atoi(parts[1])
-					resultCh <- result{IP: cl.IP, Val: val}
-					logEvent("RESULT from %s: %s", cl.IP, parts[1])
-				}
+			// Send DATA chunk (as JSON array of strings) to slave
+			dataJSON, _ := json.Marshal(chunks[idx])
+			if err := cl.Send("DATA|" + string(dataJSON)); err != nil {
+				logEvent("MapReduce: send DATA failed to %s: %v", cl.IP, err)
+				outCh <- nodeOut{IP: cl.IP, Error: err.Error()}
+				return
 			}
-		}(c)
+
+			// Send QUERY command
+			cmd := "QUERY|" + qnorm
+			if err := cl.Send(cmd); err != nil {
+				logEvent("MapReduce: send %s failed to %s: %v", cmd, cl.IP, err)
+				outCh <- nodeOut{IP: cl.IP, Error: err.Error()}
+				return
+			}
+			logEvent("MapReduce: broadcast %s → %s (chunk size: %d)", cmd, cl.IP, len(chunks[idx]))
+
+			select {
+			case line := <-cl.resultCh:
+				line = strings.TrimSpace(line)
+				logEvent("MapReduce: local result from %s: %s", cl.IP, line)
+				rep, err := parseSnapMapReduceLine(line, qnorm)
+				if err != nil {
+					outCh <- nodeOut{IP: cl.IP, Raw: line, Error: err.Error()}
+					return
+				}
+				switch rep.Kind {
+				case "COUNT", "SUM":
+					outCh <- nodeOut{IP: cl.IP, Value: rep.N1}
+				case "AVG":
+					outCh <- nodeOut{IP: cl.IP, Value: rep.N2, LocalSum: rep.N1, LocalCnt: rep.N2}
+				}
+			case <-time.After(15 * time.Second):
+				logEvent("MapReduce: timeout waiting for reply from %s", cl.IP)
+				outCh <- nodeOut{IP: cl.IP, Error: "timeout waiting for RESULT"}
+			}
+		}(i, c)
 	}
 
-	wg.Wait()
-	close(resultCh)
+	rows := make([]nodeOut, 0, len(clients))
+	for i := 0; i < len(clients); i++ {
+		rows = append(rows, <-outCh)
+	}
+	sort.Slice(rows, func(i, j int) bool { return rows[i].IP < rows[j].IP })
 
-	total := 0
 	var details []map[string]interface{}
-	for r := range resultCh {
-		total += r.Val
-		details = append(details, map[string]interface{}{"ip": r.IP, "value": r.Val})
+	totalSumAll, totalCntAll := 0, 0
+	for _, row := range rows {
+		m := map[string]interface{}{"ip": row.IP}
+		if row.Error != "" {
+			m["error"] = row.Error
+			if row.Raw != "" {
+				m["raw"] = row.Raw
+			}
+			details = append(details, m)
+			continue
+		}
+		m["value"] = row.Value
+		if qnorm == "AVG" {
+			m["local_sum"] = row.LocalSum
+			m["local_count"] = row.LocalCnt
+			totalSumAll += row.LocalSum
+			totalCntAll += row.LocalCnt
+		} else {
+			totalSumAll += row.Value
+		}
+		details = append(details, m)
 	}
 
-	logEvent("MapReduce query '%s' total=%d", req.Query, total)
-	jsonOK(w, map[string]interface{}{"total": total, "results": details})
+	resp := map[string]interface{}{
+		"query":   qnorm,
+		"results": details,
+	}
+	switch qnorm {
+	case "COUNT", "SUM":
+		resp["total"] = totalSumAll
+		logEvent("MapReduce %s: aggregated total=%d", qnorm, totalSumAll)
+	case "AVG":
+		resp["total_sum"] = totalSumAll
+		resp["total_count"] = totalCntAll
+		var avg float64
+		if totalCntAll > 0 {
+			avg = float64(totalSumAll) / float64(totalCntAll)
+		}
+		resp["average"] = avg
+		resp["total"] = totalSumAll
+		logEvent("MapReduce AVG: total_sum=%d total_count=%d global_average=%.6f", totalSumAll, totalCntAll, avg)
+	}
+
+	jsonOK(w, resp)
 }
 
-// POST /api/hash  body: {"text":"hello","difficulty":3}
+func drainSnapReplies(cl *Client) {
+	for {
+		select {
+		case <-cl.resultCh:
+		default:
+			return
+		}
+	}
+}
+
+func normalizeMapReduceQuery(q string) (string, bool) {
+	u := strings.ToUpper(strings.TrimSpace(q))
+	switch u {
+	case "COUNT", "SUM", "AVG":
+		return u, true
+	default:
+		return "", false
+	}
+}
+
+type snapMRWire struct {
+	Kind string
+	N1   int
+	N2   int
+}
+
+func parseSnapMapReduceLine(line, expectedQuery string) (snapMRWire, error) {
+	line = strings.TrimSpace(line)
+	if !strings.HasPrefix(strings.ToUpper(line), "RESULT|") {
+		return snapMRWire{}, fmt.Errorf("expected RESULT|… got %q", line)
+	}
+	parts := strings.Split(line, "|")
+	if len(parts) < 2 {
+		return snapMRWire{}, fmt.Errorf("malformed RESULT")
+	}
+	kind := strings.ToUpper(parts[1])
+	switch kind {
+	case "ERROR":
+		msg := ""
+		if len(parts) > 2 {
+			msg = strings.Join(parts[2:], "|")
+		}
+		return snapMRWire{}, fmt.Errorf("snap reported: %s", msg)
+	case "COUNT", "SUM":
+		if len(parts) < 3 {
+			return snapMRWire{}, fmt.Errorf("missing numeric field")
+		}
+		if kind != expectedQuery {
+			return snapMRWire{}, fmt.Errorf("query mismatch: got %s want %s", kind, expectedQuery)
+		}
+		v, err := strconv.Atoi(parts[2])
+		if err != nil {
+			return snapMRWire{}, err
+		}
+		return snapMRWire{Kind: kind, N1: v}, nil
+	case "AVG":
+		if expectedQuery != "AVG" {
+			return snapMRWire{}, fmt.Errorf("query mismatch: got AVG want %s", expectedQuery)
+		}
+		if len(parts) < 4 {
+			return snapMRWire{}, fmt.Errorf("AVG requires sum|count")
+		}
+		s, err1 := strconv.Atoi(parts[2])
+		c, err2 := strconv.Atoi(parts[3])
+		if err1 != nil || err2 != nil {
+			return snapMRWire{}, fmt.Errorf("invalid AVG numbers")
+		}
+		return snapMRWire{Kind: "AVG", N1: s, N2: c}, nil
+	default:
+		return snapMRWire{}, fmt.Errorf("unknown RESULT kind %q", kind)
+	}
+}
+
 func handleHash(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Text       string `json:"text"`
@@ -359,7 +689,6 @@ func handleHash(w http.ResponseWriter, r *http.Request) {
 			finalHash = hash
 			break
 		}
-		// Safety cap: 10 million attempts
 		if attempts > 10_000_000 {
 			jsonErr(w, "max attempts reached", 500)
 			return
@@ -373,11 +702,123 @@ func handleHash(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// ─────────────────────────────────────────────
-//  Helpers
-// ─────────────────────────────────────────────
+func handleMining(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		jsonErr(w, "POST only", 405)
+		return
+	}
+	var req struct {
+		Text       string `json:"text"`
+		Difficulty int    `json:"difficulty"`
+		RangeWidth int    `json:"range_width"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonErr(w, "invalid JSON", 400)
+		return
+	}
+	if req.Text == "" || req.Difficulty < 1 {
+		jsonErr(w, "text and difficulty (>=1) required", 400)
+		return
+	}
+	if req.RangeWidth < 1 {
+		req.RangeWidth = 100_001
+	}
 
-// resolveTargets returns the clients matching the target string
+	miningMu.Lock()
+	if activeMining != nil {
+		miningMu.Unlock()
+		jsonErr(w, "mining job already in progress", 409)
+		return
+	}
+	raw := store.All()
+	if len(raw) == 0 {
+		miningMu.Unlock()
+		jsonErr(w, "no connected snap nodes", 400)
+		return
+	}
+	clients := append([]*Client(nil), raw...)
+	sort.Slice(clients, func(i, j int) bool { return clients[i].IP < clients[j].IP })
+
+	sess := newMiningSession(clients)
+	activeMining = sess
+	miningMu.Unlock()
+
+	defer func() {
+		miningMu.Lock()
+		if activeMining == sess {
+			activeMining = nil
+		}
+		miningMu.Unlock()
+	}()
+
+	text := req.Text
+	diff := req.Difficulty
+	ranges := miningNonceRanges(len(clients), req.RangeWidth)
+
+	for i, c := range clients {
+		id := i + 1
+		ns, ne := ranges[i][0], ranges[i][1]
+		if err := c.Send(fmt.Sprintf("WELCOME|%d", id)); err != nil {
+			logEvent("Mining: WELCOME error %s: %v", c.IP, err)
+		}
+		job := miningJobPayload{
+			Text:       text,
+			Difficulty: diff,
+			NonceStart: ns,
+			NonceEnd:   ne,
+			WorkerID:   id,
+		}
+		b, err := json.Marshal(job)
+		if err != nil {
+			logEvent("Mining: marshal error: %v", err)
+			sess.broadcastStop()
+			sess.signalDone()
+			jsonErr(w, err.Error(), 500)
+			return
+		}
+		if err := c.Send("MINE|" + string(b)); err != nil {
+			logEvent("Mining: MINE send error %s: %v", c.IP, err)
+		}
+		logEvent("Mining: worker %d range [%d,%d] → %s", id, ns, ne, c.IP)
+	}
+
+	sess.found.Wait()
+	sess.waitForStats(3 * time.Second)
+	elapsed := time.Since(sess.startTime).Seconds()
+
+	sess.mu.Lock()
+	result := sess.result
+	sess.mu.Unlock()
+
+	sess.statsMu.Lock()
+	var totalAttempts int64
+	for _, v := range sess.stats {
+		totalAttempts += v
+	}
+	sess.statsMu.Unlock()
+
+	if totalAttempts == 0 && result != nil {
+		if fa, ok := result["finder_attempts"].(int64); ok {
+			totalAttempts = fa
+		}
+	}
+
+	out := map[string]interface{}{
+		"elapsed_sec":    elapsed,
+		"workers":        len(clients),
+		"total_attempts": totalAttempts,
+	}
+	if result != nil && result["hash"] != nil {
+		out["hash"] = result["hash"]
+		out["nonce"] = result["nonce"]
+		out["finder_worker_id"] = result["worker_id"]
+	} else {
+		out["message"] = "no valid hash in assigned ranges (all workers exhausted)"
+	}
+	logEvent("Mining finished: attempts=%d elapsed=%.4fs", totalAttempts, elapsed)
+	jsonOK(w, out)
+}
+
 func resolveTargets(target string) []*Client {
 	if strings.ToUpper(target) == "ALL" {
 		return store.All()
@@ -388,36 +829,28 @@ func resolveTargets(target string) []*Client {
 	return nil
 }
 
-// ─────────────────────────────────────────────
-//  Main
-// ─────────────────────────────────────────────
-
 func main() {
 	initLogger()
 	defer logFile.Close()
 
 	logEvent("Master node starting...")
 
-	// TCP server for Snap nodes on port 9000
 	go startTCPServer("9000")
 
-	// HTTP API + static dashboard on port 8080
 	mux := http.NewServeMux()
-
-	// Serve dashboard
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		http.ServeFile(w, r, filepath.Join("static", "dashboard.html"))
 	})
 
-	// API routes
 	mux.HandleFunc("/api/clients", handleListClients)
 	mux.HandleFunc("/api/shutdown", handleShutdown)
 	mux.HandleFunc("/api/sendfile", handleSendFile)
 	mux.HandleFunc("/api/wallpaper", handleWallpaper)
 	mux.HandleFunc("/api/query", handleQuery)
 	mux.HandleFunc("/api/hash", handleHash)
+	mux.HandleFunc("/api/mining", handleMining)
 
-	logEvent("HTTP dashboard on http://localhost:8080")
+	logEvent("HTTP dashboard on :8080")
 	if err := http.ListenAndServe(":8080", mux); err != nil {
 		logger.Fatal("HTTP server error:", err)
 	}
