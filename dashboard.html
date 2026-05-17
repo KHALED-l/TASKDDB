@@ -333,6 +333,48 @@ input[type="text"]:focus, input[type="number"]:focus, select:focus, textarea:foc
 ::-webkit-scrollbar-thumb { background:var(--border); border-radius:3px; }
 ::-webkit-scrollbar-thumb:hover { background:var(--accent); }
 
+/* ── Cache Steps ── */
+.cache-step {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  transition: border-color 0.3s, box-shadow 0.3s;
+}
+.cache-step.active {
+  border-color: var(--accent);
+  box-shadow: 0 0 16px rgba(0,212,255,0.15);
+}
+.cache-step.success {
+  border-color: var(--green);
+  box-shadow: 0 0 16px rgba(0,255,157,0.15);
+}
+.cache-step.error {
+  border-color: var(--red);
+  box-shadow: 0 0 16px rgba(255,77,109,0.15);
+}
+.cache-step-num {
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  color: var(--accent);
+  letter-spacing: 0.1em;
+}
+.cache-step-label {
+  font-size: 0.75rem;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+}
+.cache-step-value {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--text);
+  min-height: 1.4em;
+}
+
 /* ── Log section ── */
 .log-box {
   background: #040608; border:1px solid var(--border); border-radius:6px;
@@ -376,6 +418,7 @@ input[type="text"]:focus, input[type="number"]:focus, select:focus, textarea:foc
   <button class="nav-btn" onclick="showTab('remote',this)">⚡ REMOTE</button>
   <button class="nav-btn" onclick="showTab('mapreduce',this)">⊛ MAPREDUCE</button>
   <button class="nav-btn" onclick="showTab('hashing',this)">⟳ HASHING</button>
+  <button class="nav-btn" onclick="showTab('cache',this)">⇄ CACHE</button>
   <button class="nav-btn" onclick="showTab('logs',this)">▤ LOGS</button>
 </nav>
 
@@ -493,6 +536,14 @@ input[type="text"]:focus, input[type="number"]:focus, select:focus, textarea:foc
       <div class="section-subtitle">// Distributed query execution across all nodes</div>
     </div>
 
+    <div class="card" style="margin-bottom:16px;border-color:rgba(255,183,0,0.35);background:rgba(255,183,0,0.06)">
+      <div class="card-title" style="color:var(--amber)">HTTP API ORIGIN</div>
+      <p id="mrApiOrigin" style="font-family:var(--font-mono);font-size:0.8rem;color:var(--text);word-break:break-all"></p>
+      <p style="font-size:0.74rem;color:var(--muted);margin-top:8px;line-height:1.5">
+        MapReduce calls this origin only. Snaps must connect to the <strong>same machine’s</strong> TCP port <code style="font-family:var(--font-mono)">9000</code>. If Snaps use <code style="font-family:var(--font-mono)">10.x.x.x:9000</code>, open the dashboard at <code style="font-family:var(--font-mono)">http://10.x.x.x:8080</code> — not <code style="font-family:var(--font-mono)">localhost</code> unless the master runs locally.
+      </p>
+    </div>
+
     <div class="card">
       <div class="card-title">QUERY INPUT</div>
       <div class="form-group">
@@ -522,7 +573,7 @@ input[type="text"]:focus, input[type="number"]:focus, select:focus, textarea:foc
   <section id="tab-hashing" class="section">
     <div class="section-header">
       <div class="section-title">SHA-256 Mining</div>
-      <div class="section-subtitle">// Proof-of-work hash difficulty simulation</div>
+      <div class="section-subtitle">// Local PoW on master + distributed mine across all Snaps (TCP :9000)</div>
     </div>
 
     <div class="card">
@@ -540,6 +591,46 @@ input[type="text"]:focus, input[type="number"]:focus, select:focus, textarea:foc
       </button>
     </div>
 
+    <div class="card" style="margin-top:20px">
+      <div class="card-title">DISTRIBUTED — ALL SNAPS</div>
+      <p style="font-size:0.78rem;color:var(--muted);margin-bottom:14px;line-height:1.55">
+        Uses the <strong>same text and difficulty</strong> as above. Requires at least one Snap connected on TCP <span style="font-family:var(--font-mono)">9000</span>. Nonces are split by <code style="font-family:var(--font-mono);font-size:0.75rem">range_width</code> per node.
+      </p>
+      <div class="form-group">
+        <label>RANGE WIDTH (nonces per Snap, inclusive width)</label>
+        <input type="number" id="distRangeWidth" min="1" value="100001"/>
+      </div>
+      <button class="btn btn-primary" onclick="doDistributedMining()" id="distMineBtn">⛏ DISTRIBUTED MINE</button>
+    </div>
+
+    <div class="card" id="distMineResultCard" style="display:none;margin-top:16px">
+      <div class="card-title">DISTRIBUTED RESULT</div>
+      <div class="stat-grid">
+        <div class="stat-card">
+          <div class="stat-num" id="distWorkers">—</div>
+          <div class="stat-label">Snaps</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-num" id="distAttempts">—</div>
+          <div class="stat-label">Total attempts</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-num" id="distElapsed">—</div>
+          <div class="stat-label">Seconds</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-num" id="distFinder">—</div>
+          <div class="stat-label">Finder worker</div>
+        </div>
+      </div>
+      <div style="margin-top:16px">
+        <label style="font-size:0.7rem;color:var(--muted);font-family:var(--font-mono);display:block;margin-bottom:8px">MESSAGE / HASH</label>
+        <div class="hash-display">
+          <div class="hash-value" id="distMineMsg">—</div>
+        </div>
+      </div>
+    </div>
+
     <div class="card" id="hashResultCard" style="display:none">
       <div class="card-title">RESULT</div>
       <div class="stat-grid">
@@ -553,6 +644,97 @@ input[type="text"]:focus, input[type="number"]:focus, select:focus, textarea:foc
         <div class="hash-display">
           <div class="hash-value" id="hashValue">—</div>
         </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ════════ CACHE ════════ -->
+  <section id="tab-cache" class="section">
+    <div class="section-header">
+      <div class="section-title">Cache System</div>
+      <div class="section-subtitle">// Temporary → Permanent storage pipeline</div>
+    </div>
+
+    <!-- Insert form -->
+    <div class="card" style="margin-bottom:20px">
+      <div class="toolbar">
+        <div class="card-title">INSERT DATA</div>
+        <span style="font-family:var(--font-mono);font-size:0.72rem;color:var(--muted)">Protocol: INSERT|Name|Age</span>
+      </div>
+      <div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:12px">
+        <div style="flex:1;min-width:160px">
+          <label style="font-size:0.75rem;color:var(--muted);font-family:var(--font-mono);display:block;margin-bottom:6px">NAME</label>
+          <input id="cacheName" class="input" placeholder="e.g. Ahmed" style="width:100%"/>
+        </div>
+        <div style="flex:1;min-width:120px">
+          <label style="font-size:0.75rem;color:var(--muted);font-family:var(--font-mono);display:block;margin-bottom:6px">AGE</label>
+          <input id="cacheAge" class="input" placeholder="e.g. 22" style="width:100%"/>
+        </div>
+        <div style="display:flex;align-items:flex-end">
+          <button class="btn btn-primary" id="cacheInsertBtn" onclick="doCacheInsert()">⇄ SEND TO CACHE</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Workflow status -->
+    <div class="card" id="cacheWorkflowCard">
+      <div class="toolbar">
+        <div class="card-title">WORKFLOW STATUS</div>
+        <span id="cacheWorkflowTime" style="font-family:var(--font-mono);font-size:0.72rem;color:var(--muted)"></span>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px;margin-top:16px">
+
+        <!-- Step 1 -->
+        <div class="cache-step" id="step-incoming">
+          <div class="cache-step-num">01</div>
+          <div class="cache-step-label">Incoming Data</div>
+          <div class="cache-step-value" id="step-incoming-val">—</div>
+        </div>
+
+        <!-- Step 2 -->
+        <div class="cache-step" id="step-cached">
+          <div class="cache-step-num">02</div>
+          <div class="cache-step-label">Cache Status</div>
+          <div class="cache-step-value" id="step-cached-val">—</div>
+        </div>
+
+        <!-- Step 3 -->
+        <div class="cache-step" id="step-main">
+          <div class="cache-step-num">03</div>
+          <div class="cache-step-label">Main Server</div>
+          <div class="cache-step-value" id="step-main-val">—</div>
+        </div>
+
+        <!-- Step 4 -->
+        <div class="cache-step" id="step-cleared">
+          <div class="cache-step-num">04</div>
+          <div class="cache-step-label">Cache Cleared</div>
+          <div class="cache-step-value" id="step-cleared-val">—</div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- Stored records table (from Main server) -->
+    <div class="card" style="margin-top:20px">
+      <div class="toolbar">
+        <div class="card-title">PERMANENT STORAGE <span style="color:var(--muted);font-weight:400">(Main Server)</span></div>
+        <button class="btn btn-ghost" onclick="refreshMainRecords()">↻ REFRESH</button>
+      </div>
+      <div class="table-wrap" style="margin-top:12px">
+        <table>
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Name</th>
+              <th>Age</th>
+              <th>Stored At</th>
+            </tr>
+          </thead>
+          <tbody id="mainRecordsBody">
+            <tr><td colspan="4" style="color:var(--muted);text-align:center;padding:24px">No records yet</td></tr>
+          </tbody>
+        </table>
       </div>
     </div>
   </section>
@@ -627,6 +809,21 @@ function showTab(name, el) {
   document.querySelectorAll('.nav-btn').forEach(b=>b.classList.remove('active'));
   document.getElementById('tab-'+name).classList.add('active');
   el.classList.add('active');
+  if(name === 'mapreduce') refreshMapReduceApiHint();
+}
+
+function refreshMapReduceApiHint() {
+  const el = document.getElementById('mrApiOrigin');
+  if(el) el.textContent = window.location.origin || '(unknown)';
+}
+
+function escapeHtml(s) {
+  if(s==null||s==='') return '';
+  return String(s)
+    .replace(/&/g,'&amp;')
+    .replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;');
 }
 
 // ─────────────────────────────────────────────
@@ -657,7 +854,7 @@ function renderClients() {
     tbody.innerHTML = `<tr><td colspan="4">
       <div class="empty-state">
         <div class="empty-icon">⬡</div>
-        <div class="empty-text">No snap nodes connected. Start a snap node to begin.</div>
+        <div class="empty-text">No snap nodes connected on <strong>this</strong> master (same host as this page, port 9000). If Snaps dial <code style="font-family:var(--font-mono)">10.x.x.x:9000</code>, open the dashboard at <code style="font-family:var(--font-mono)">http://10.x.x.x:8080</code> — not localhost unless the master runs here.</div>
       </div></td></tr>`;
     return;
   }
@@ -784,8 +981,17 @@ async function doMapReduce() {
     const data = await res.json();
     if(res.ok) {
       renderMRResult(data, query);
-      toast(`Query "${query}" complete — total: ${data.total}`, 'success');
-      log(`MapReduce "${query}" → total=${data.total}`, 'event');
+      const noNodes = data.message && (!data.results || data.results.length === 0);
+      if(noNodes) {
+        toast(data.message + ' — check HTTP origin vs Snap master IP', 'error');
+        log(`MapReduce: ${data.message}`, 'event');
+      } else {
+        const summary = (query.toUpperCase()==='AVG' && data.average!=null)
+          ? `avg=${Number(data.average).toFixed(6)} (Σ=${data.total_sum}, n=${data.total_count})`
+          : `total=${data.total}`;
+        toast(`Query "${query}" complete — ${summary}`, 'success');
+        log(`MapReduce "${query}" → ${summary}`, 'event');
+      }
     } else { toast(data.error||'Query failed', 'error'); }
   } catch(e) { toast('Request failed', 'error'); }
   finally { setLoading('mrBtn', false); }
@@ -796,20 +1002,36 @@ function renderMRResult(data, query) {
   const body = document.getElementById('mrResultBody');
   card.style.display='block';
 
-  const rows = (data.results||[]).map(r=>`
-    <div class="mr-row">
-      <span class="mr-ip">⬡ ${r.ip}</span>
-      <span class="mr-val">${r.value}</span>
-    </div>
-  `).join('');
+  const qU = (query||'').toUpperCase();
+  let banner = '';
+  if(data.message) {
+    const hintHtml = data.hint ? `<div style="margin-top:10px;font-size:0.76rem;color:var(--muted);line-height:1.55">${escapeHtml(data.hint)}</div>` : '';
+    banner = `<div style="padding:14px;margin-bottom:14px;border-radius:8px;background:rgba(255,77,109,0.1);border:1px solid rgba(255,77,109,0.35);color:var(--text);font-size:0.85rem"><strong style="color:var(--red)">Notice</strong><div style="margin-top:6px">${escapeHtml(data.message)}</div>${hintHtml}</div>`;
+  }
+
+  const rows = (data.results||[]).map(r=>{
+    if(r.error) {
+      return `<div class="mr-row"><span class="mr-ip">⬡ ${r.ip}</span><span class="mr-val" style="color:var(--red)">${r.error}</span></div>`;
+    }
+    const extra = (qU==='AVG' && r.local_sum!=null) ? ` <span style="color:var(--muted);font-size:0.72rem">sum=${r.local_sum} count=${r.local_count}</span>` : '';
+    return `<div class="mr-row"><span class="mr-ip">⬡ ${r.ip}</span><span class="mr-val">${r.value}${extra}</span></div>`;
+  }).join('');
+
+  const aggLabel = qU==='AVG'
+    ? `GLOBAL AVG [ ${query} ] — Σ=${data.total_sum ?? '—'} / n=${data.total_count ?? '—'}`
+    : `AGGREGATE TOTAL [ ${query} ]`;
+  const aggVal = qU==='AVG'
+    ? (data.average!=null ? Number(data.average).toFixed(6) : '—')
+    : (data.total ?? '—');
 
   body.innerHTML = `
+    ${banner}
     <div style="margin-bottom:8px">
       ${rows || '<div class="mr-row"><span style="color:var(--muted)">No node results returned</span></div>'}
     </div>
     <div class="mr-total">
-      <span class="mr-total-label">AGGREGATE TOTAL [ ${query} ]</span>
-      <span class="mr-total-val">${data.total}</span>
+      <span class="mr-total-label">${aggLabel}</span>
+      <span class="mr-total-val">${aggVal}</span>
     </div>
   `;
 }
@@ -858,12 +1080,156 @@ function renderHashResult(data, diff) {
     `<span class="hash-zeros">${zeros}</span><span class="hash-rest">${rest}</span>`;
 }
 
+async function doDistributedMining() {
+  const text = document.getElementById('hashText').value.trim();
+  const diff = parseInt(document.getElementById('hashDifficulty').value);
+  const rw = parseInt(document.getElementById('distRangeWidth').value, 10);
+  if(!text) { toast('Enter input text (HASH PARAMETERS)', 'error'); return; }
+  if(diff < 1 || diff > 8) { toast('Difficulty must be 1–8', 'error'); return; }
+  if(!rw || rw < 1) { toast('Range width must be >= 1', 'error'); return; }
+
+  setLoading('distMineBtn', true, '⛏ MINING...');
+  document.getElementById('distMineResultCard').style.display='none';
+  log(`DISTRIBUTED mine: text="${text}" difficulty=${diff} range_width=${rw}`, 'event');
+
+  try {
+    const res = await fetch('/api/mining', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ text, difficulty: diff, range_width: rw })
+    });
+    const data = await res.json();
+    if(res.ok) {
+      document.getElementById('distMineResultCard').style.display='block';
+      document.getElementById('distWorkers').textContent = String(data.workers ?? '—');
+      document.getElementById('distAttempts').textContent = (data.total_attempts ?? 0).toLocaleString();
+      document.getElementById('distElapsed').textContent = (data.elapsed_sec != null) ? Number(data.elapsed_sec).toFixed(4) : '—';
+      document.getElementById('distFinder').textContent = (data.finder_worker_id != null) ? String(data.finder_worker_id) : '—';
+      const el = document.getElementById('distMineMsg');
+      if(data.hash) {
+        const zeros = String(data.hash).slice(0, diff);
+        const rest = String(data.hash).slice(diff);
+        el.innerHTML = `<span class="hash-zeros">${zeros}</span><span class="hash-rest">${rest}</span><div style="margin-top:10px;font-size:0.75rem;color:var(--muted)">nonce: ${data.nonce}</div>`;
+        toast('Distributed hash found', 'success');
+        log(`DISTRIBUTED result: hash=${data.hash} nonce=${data.nonce} worker=${data.finder_worker_id}`, 'event');
+      } else {
+        el.textContent = data.message || 'No hash from Snaps';
+        toast(data.message || 'Done', 'info');
+      }
+    } else {
+      toast(data.error || 'Distributed mine failed', 'error');
+    }
+  } catch(e) { toast('Request failed', 'error'); }
+  finally { setLoading('distMineBtn', false); }
+}
+
+// ─────────────────────────────────────────────
+//  Cache System
+// ─────────────────────────────────────────────
+
+const CACHE_API  = 'http://localhost:8081';  // Cache node
+const MAIN_API   = 'http://localhost:8082';  // Main server
+
+function resetCacheSteps() {
+  ['incoming','cached','main','cleared'].forEach(id => {
+    const el = document.getElementById('step-'+id);
+    el.classList.remove('active','success','error');
+    document.getElementById('step-'+id+'-val').textContent = '—';
+  });
+}
+
+function setCacheStep(id, value, state /* 'active'|'success'|'error' */) {
+  const el = document.getElementById('step-'+id);
+  el.classList.remove('active','success','error');
+  if(state) el.classList.add(state);
+  document.getElementById('step-'+id+'-val').textContent = value;
+}
+
+async function doCacheInsert() {
+  const name = document.getElementById('cacheName').value.trim();
+  const age  = document.getElementById('cacheAge').value.trim();
+  if(!name || !age) { toast('Enter both Name and Age', 'error'); return; }
+
+  setLoading('cacheInsertBtn', true, '⇄ PROCESSING...');
+  resetCacheSteps();
+
+  // Step 1 UI — show incoming
+  setCacheStep('incoming', `${name}, ${age}`, 'active');
+  log(`Cache INSERT: ${name}, ${age}`, 'event');
+
+  try {
+    const res = await fetch(`${CACHE_API}/api/cache/insert`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, age })
+    });
+    const data = await res.json();
+
+    if(!res.ok) throw new Error(data.error || 'Insert failed');
+
+    // Step 1 done
+    setCacheStep('incoming', `${name}, ${age}`, 'success');
+
+    // Step 2
+    setCacheStep('cached', data.cache_status || 'Stored Temporarily', 'success');
+
+    // Step 3
+    const mainOk = data.main_server && data.main_server.includes('Success');
+    setCacheStep('main', data.main_server || '—', mainOk ? 'success' : 'error');
+
+    // Step 4
+    setCacheStep('cleared', data.cache_cleared || '—', data.cache_cleared ? 'success' : 'active');
+
+    document.getElementById('cacheWorkflowTime').textContent = new Date().toLocaleTimeString();
+
+    toast(`Replicated: ${name}, ${age}`, 'success');
+    log(`Cache workflow complete — ${name}, ${age} → Main`, 'event');
+
+    // Refresh permanent records
+    await refreshMainRecords();
+
+  } catch(e) {
+    setCacheStep('incoming', `${name}, ${age}`, 'error');
+    setCacheStep('main', 'Connection Failed', 'error');
+    toast('Cache Error: ' + e.message, 'error');
+    log('Cache insert failed: ' + e.message, 'error');
+  } finally {
+    setLoading('cacheInsertBtn', false, '⇄ SEND TO CACHE');
+  }
+}
+
+async function refreshMainRecords() {
+  try {
+    const res  = await fetch(`${MAIN_API}/api/records`);
+    const data = await res.json();
+    const tbody = document.getElementById('mainRecordsBody');
+    const records = data.records || [];
+    if(records.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="4" style="color:var(--muted);text-align:center;padding:24px">No records yet</td></tr>';
+      return;
+    }
+    tbody.innerHTML = records.map((r,i) => `
+      <tr>
+        <td style="color:var(--muted)">${i+1}</td>
+        <td>${r.name}</td>
+        <td>${r.age}</td>
+        <td style="color:var(--muted);font-size:0.8rem">${new Date(r.received_at).toLocaleString()}</td>
+      </tr>
+    `).join('');
+  } catch(e) {
+    // Main server not running — show note
+    document.getElementById('mainRecordsBody').innerHTML =
+      '<tr><td colspan="4" style="color:var(--amber);text-align:center;padding:16px">Main server offline (start main_server/main_server.go)</td></tr>';
+  }
+}
+
 // ─────────────────────────────────────────────
 //  Auto-refresh clients every 5s
 // ─────────────────────────────────────────────
 
 refreshClients();
 setInterval(refreshClients, 5000);
+refreshMapReduceApiHint();
 log('Master dashboard initialized', 'event');
 </script>
 </body>
