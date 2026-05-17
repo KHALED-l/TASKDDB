@@ -1,0 +1,6 @@
+[MASTER] 2026/05/15 23:30:56 Master node starting...
+[MASTER] 2026/05/15 23:30:56 HTTP dashboard on :8080 — use http://<this-machine-LAN-IP>:8080 from other PCs if Snaps connect via that IP on :9000
+[MASTER] 2026/05/15 23:30:56 TCP server listening on port 9000
+[MASTER] 2026/05/16 14:07:28 Master node starting...
+[MASTER] 2026/05/16 14:07:28 HTTP dashboard on :8080
+[MASTER] 2026/05/16 14:07:28 TCP server listening on port 9000
